@@ -131,6 +131,17 @@ button{font-family:var(--font);cursor:pointer;border:none;outline:none;-webkit-a
 .res-btn.share{background:var(--accent);color:var(--bg)}
 .res-btn svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .res-new{width:100%;padding:12px;background:transparent;color:var(--dim);font-size:13px;font-weight:500;text-align:center;margin-top:4px}
+.filter-bar{
+  display:flex;gap:8px;padding:12px 20px;background:var(--s1);border-top:1px solid var(--s2);flex-shrink:0;
+}
+.filter-btn{
+  flex:1;padding:10px 8px;border-radius:8px;font-size:12px;font-weight:600;
+  font-family:var(--mono);text-transform:uppercase;letter-spacing:0.5px;
+  background:var(--s2);color:var(--dim);border:1px solid var(--s3);
+  transition:all .15s;text-align:center;
+}
+.filter-btn.active{background:var(--accent-lo);color:var(--accent);border-color:var(--accent-md)}
+.filter-btn:active{transform:scale(.96)}
 </style>
 </head>
 <body>
@@ -184,6 +195,11 @@ button{font-family:var(--font);cursor:pointer;border:none;outline:none;-webkit-a
     <div style="width:70px"></div>
   </div>
   <div class="res-preview"><img id="result-img"></div>
+  <div class="filter-bar">
+    <button class="filter-btn active" id="fbtn-enhanced" onclick="setFilter('enhanced')">Enhanced</button>
+    <button class="filter-btn" id="fbtn-original" onclick="setFilter('original')">Original</button>
+    <button class="filter-btn" id="fbtn-bw" onclick="setFilter('bw')">B&W</button>
+  </div>
   <div class="res-actions">
     <button class="res-btn jpeg" onclick="saveJPEG()"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>JPEG</button>
     <button class="res-btn pdf" onclick="savePDF()"><svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>PDF</button>
@@ -518,7 +534,7 @@ function backFromCrop(){showScreen('screen-welcome')}
 
 // ── PERSPECTIVE TRANSFORM ──
 function applyTransform(){showSpinner('Flattening document…');requestAnimationFrame(()=>setTimeout(doTransform,50))}
-function doTransform(){
+async function doTransform(){
   if(cvReady){
     // Use OpenCV warpPerspective for best quality
     try{
@@ -542,19 +558,26 @@ function doTransform(){
 
       const outC=document.createElement('canvas');outC.width=W;outC.height=H;
       cv.imshow(outC,dst);
-      resultDataURL=outC.toDataURL('image/jpeg',.92);
+      rawResultDataURL=outC.toDataURL('image/jpeg',.92);
 
       src.delete();dst.delete();M.delete();srcPts.delete();dstPts.delete();
+
+      // Apply enhancement by default
+      resultDataURL=await enhanceDocument(rawResultDataURL);
       document.getElementById('result-img').src=resultDataURL;
+      currentFilter='enhanced';
       hideSpinner();showScreen('screen-result');
+      // Reset filter buttons
+      document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('active'));
+      document.getElementById('fbtn-enhanced').classList.add('active');
       return;
     }catch(e){console.error('OpenCV warp error:',e)}
   }
   // Fallback: manual homography
-  doTransformManual();
+  await doTransformManual();
 }
 
-function doTransformManual(){
+async function doTransformManual(){
   const src=corners,dist=(a,b)=>Math.hypot(b.x-a.x,b.y-a.y);
   const W=Math.round(Math.max(dist(src[0],src[1]),dist(src[3],src[2]))),H=Math.round(Math.max(dist(src[0],src[3]),dist(src[1],src[2])));
   const dst=[{x:0,y:0},{x:W,y:0},{x:W,y:H},{x:0,y:H}],Hm=compH(src,dst);
@@ -570,8 +593,14 @@ function doTransformManual(){
       i00=(y0*sw+x0)*4,i10=i00+4,i01=i00+sw*4,i11=i01+4,w00=(1-fx)*(1-fy),w10=fx*(1-fy),w01=(1-fx)*fy,w11=fx*fy,di=(y*W+x)*4;
       d[di]=s[i00]*w00+s[i10]*w10+s[i01]*w01+s[i11]*w11;d[di+1]=s[i00+1]*w00+s[i10+1]*w10+s[i01+1]*w01+s[i11+1]*w11;
       d[di+2]=s[i00+2]*w00+s[i10+2]*w10+s[i01+2]*w01+s[i11+2]*w11;d[di+3]=255}}
-  dctx.putImageData(dd,0,0);resultDataURL=dc.toDataURL('image/jpeg',.92);
-  document.getElementById('result-img').src=resultDataURL;hideSpinner();showScreen('screen-result');
+  dctx.putImageData(dd,0,0);
+  rawResultDataURL=dc.toDataURL('image/jpeg',.92);
+  resultDataURL=await enhanceDocument(rawResultDataURL);
+  document.getElementById('result-img').src=resultDataURL;
+  currentFilter='enhanced';
+  document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById('fbtn-enhanced').classList.add('active');
+  hideSpinner();showScreen('screen-result');
 }
 function compH(src,dst){
   const A=[],b=[];for(let i=0;i<4;i++){const sx=src[i].x,sy=src[i].y,dx=dst[i].x,dy=dst[i].y;
@@ -584,6 +613,203 @@ function compH(src,dst){
 }
 function inv3(m){const[a,b,c,d,e,f,g,h,i]=m,det=a*(e*i-f*h)-b*(d*i-f*g)+c*(d*h-e*g);if(Math.abs(det)<1e-10)return null;const id=1/det;
   return[(e*i-f*h)*id,(c*h-b*i)*id,(b*f-c*e)*id,(f*g-d*i)*id,(a*i-c*g)*id,(c*d-a*f)*id,(d*h-e*g)*id,(b*g-a*h)*id,(a*e-b*d)*id]}
+
+// ══════════════════════════════════════════
+// DOCUMENT ENHANCEMENT FILTERS
+// ══════════════════════════════════════════
+let rawResultDataURL=''; // stores the unfiltered warp result
+let currentFilter='enhanced';
+
+function enhanceDocument(dataURL){
+  // Load into canvas, apply OpenCV enhancement
+  return new Promise(resolve=>{
+    const img=new Image();
+    img.onload=()=>{
+      const c=document.createElement('canvas');
+      c.width=img.width;c.height=img.height;
+      c.getContext('2d').drawImage(img,0,0);
+
+      if(cvReady){
+        try{
+          let src=cv.imread(c);
+          let gray=new cv.Mat();
+          let enhanced=new cv.Mat();
+
+          // Convert to grayscale for analysis
+          cv.cvtColor(src,gray,cv.COLOR_RGBA2GRAY);
+
+          // 1. Normalize lighting with CLAHE (Contrast Limited Adaptive Histogram Equalization)
+          // This evens out shadows and lighting variations
+          let clahe=new cv.CLAHE(2.0,new cv.Size(8,8));
+          clahe.apply(gray,enhanced);
+
+          // 2. Convert back to color but with corrected luminance
+          // Work in LAB color space for better results
+          let lab=new cv.Mat();
+          cv.cvtColor(src,lab,cv.COLOR_RGBA2RGB);
+          let labConv=new cv.Mat();
+          cv.cvtColor(lab,labConv,cv.COLOR_RGB2Lab);
+
+          // Split LAB channels
+          let labChannels=new cv.MatVector();
+          cv.split(labConv,labChannels);
+
+          // Replace L channel with CLAHE-enhanced version
+          let lChannel=labChannels.get(0);
+          let enhancedL=new cv.Mat();
+          clahe.apply(lChannel,enhancedL);
+
+          // Boost: push light pixels even lighter (paper whitening)
+          let lData=enhancedL.data;
+          for(let i=0;i<lData.length;i++){
+            let v=lData[i];
+            // Aggressive curve: push highlights to white, darken darks
+            if(v>160) v=Math.min(255, v+((v-160)/95)*60);
+            else if(v>100) v=v+((v-100)/60)*20;
+            else v=Math.max(0, v*0.85);
+            lData[i]=Math.round(v);
+          }
+
+          // Recombine
+          let newChannels=new cv.MatVector();
+          newChannels.push_back(enhancedL);
+          newChannels.push_back(labChannels.get(1));
+          newChannels.push_back(labChannels.get(2));
+
+          let merged=new cv.Mat();
+          cv.merge(newChannels,merged);
+          let result=new cv.Mat();
+          cv.cvtColor(merged,result,cv.COLOR_Lab2RGB);
+
+          // 3. Slight sharpening via unsharp mask
+          let blurred=new cv.Mat();
+          cv.GaussianBlur(result,blurred,new cv.Size(0,0),2);
+          let sharpened=new cv.Mat();
+          cv.addWeighted(result,1.3,blurred,-0.3,0,sharpened);
+
+          // 4. Desaturate slightly (documents shouldn't be too colorful)
+          let hsvImg=new cv.Mat();
+          cv.cvtColor(sharpened,hsvImg,cv.COLOR_RGB2HSV);
+          let hsvCh=new cv.MatVector();
+          cv.split(hsvImg,hsvCh);
+          let satCh=hsvCh.get(1);
+          let sData=satCh.data;
+          for(let i=0;i<sData.length;i++) sData[i]=Math.round(sData[i]*0.4);
+          let finalHsv=new cv.Mat();
+          cv.merge(hsvCh,finalHsv);
+          let finalRgb=new cv.Mat();
+          cv.cvtColor(finalHsv,finalRgb,cv.COLOR_HSV2RGB);
+
+          // Output
+          let outRgba=new cv.Mat();
+          cv.cvtColor(finalRgb,outRgba,cv.COLOR_RGB2RGBA);
+          cv.imshow(c,outRgba);
+
+          // Cleanup
+          [src,gray,enhanced,lab,labConv,lChannel,enhancedL,merged,result,blurred,sharpened,
+           hsvImg,finalHsv,finalRgb,outRgba].forEach(m=>m.delete());
+          [labChannels,newChannels,hsvCh].forEach(v=>v.delete());
+          clahe.delete();
+
+          resolve(c.toDataURL('image/jpeg',.92));
+          return;
+        }catch(e){
+          console.error('Enhancement error:',e);
+        }
+      }
+
+      // Fallback: simple JS contrast + white balance
+      const ctx=c.getContext('2d');
+      const imgData=ctx.getImageData(0,0,c.width,c.height);
+      const d=imgData.data;
+
+      // Find brightness range
+      let minB=255,maxB=0;
+      for(let i=0;i<d.length;i+=4){
+        const br=0.299*d[i]+0.587*d[i+1]+0.114*d[i+2];
+        if(br<minB)minB=br;if(br>maxB)maxB=br;
+      }
+
+      // Stretch contrast and push whites
+      const range=maxB-minB||1;
+      for(let i=0;i<d.length;i+=4){
+        for(let ch=0;ch<3;ch++){
+          let v=(d[i+ch]-minB)/range*255;
+          // Push highlights to white
+          if(v>180) v=Math.min(255, v+((v-180)/75)*40);
+          // Darken shadows
+          else if(v<80) v=v*0.8;
+          d[i+ch]=Math.max(0,Math.min(255,Math.round(v)));
+        }
+      }
+      ctx.putImageData(imgData,0,0);
+      resolve(c.toDataURL('image/jpeg',.92));
+    };
+    img.src=dataURL;
+  });
+}
+
+function makeBW(dataURL){
+  return new Promise(resolve=>{
+    const img=new Image();
+    img.onload=()=>{
+      const c=document.createElement('canvas');
+      c.width=img.width;c.height=img.height;
+      c.getContext('2d').drawImage(img,0,0);
+
+      if(cvReady){
+        try{
+          let src=cv.imread(c);
+          let gray=new cv.Mat();
+          let bw=new cv.Mat();
+          cv.cvtColor(src,gray,cv.COLOR_RGBA2GRAY);
+          cv.GaussianBlur(gray,gray,new cv.Size(3,3),0);
+          // Adaptive threshold for clean B&W
+          cv.adaptiveThreshold(gray,bw,255,cv.ADAPTIVE_THRESH_GAUSSIAN_C,cv.THRESH_BINARY,31,12);
+          let outRgba=new cv.Mat();
+          cv.cvtColor(bw,outRgba,cv.COLOR_GRAY2RGBA);
+          cv.imshow(c,outRgba);
+          src.delete();gray.delete();bw.delete();outRgba.delete();
+          resolve(c.toDataURL('image/jpeg',.92));
+          return;
+        }catch(e){console.error('BW error:',e)}
+      }
+
+      // Fallback: simple threshold
+      const ctx=c.getContext('2d');
+      const imgData=ctx.getImageData(0,0,c.width,c.height);
+      const d=imgData.data;
+      for(let i=0;i<d.length;i+=4){
+        const br=0.299*d[i]+0.587*d[i+1]+0.114*d[i+2];
+        const v=br>140?255:0;
+        d[i]=d[i+1]=d[i+2]=v;
+      }
+      ctx.putImageData(imgData,0,0);
+      resolve(c.toDataURL('image/jpeg',.92));
+    };
+    img.src=dataURL;
+  });
+}
+
+async function setFilter(mode){
+  currentFilter=mode;
+  document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById('fbtn-'+mode).classList.add('active');
+
+  showSpinner('Applying filter…');
+  await new Promise(r=>setTimeout(r,50));
+
+  if(mode==='original'){
+    resultDataURL=rawResultDataURL;
+  } else if(mode==='enhanced'){
+    resultDataURL=await enhanceDocument(rawResultDataURL);
+  } else if(mode==='bw'){
+    resultDataURL=await makeBW(rawResultDataURL);
+  }
+
+  document.getElementById('result-img').src=resultDataURL;
+  hideSpinner();
+}
 
 // ── EXPORT ──
 function saveJPEG(){dl(resultDataURL,'DocScan_'+ts()+'.jpg');toast('JPEG saved')}
