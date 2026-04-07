@@ -17,7 +17,7 @@
   --r:10px;--font:'Outfit',sans-serif;--mono:'JetBrains Mono',monospace;
 }
 html,body{height:100%;overflow:hidden}
-body{font-family:var(--font);background:var(--bg);color:var(--text);position:relative;touch-action:none}
+body{font-family:var(--font);background:var(--bg);color:var(--text);position:relative;touch-action:none;-webkit-user-select:none;user-select:none}
 .hide{display:none!important}
 button{font-family:var(--font);cursor:pointer;border:none;outline:none;-webkit-appearance:none}
 
@@ -70,16 +70,15 @@ button{font-family:var(--font);cursor:pointer;border:none;outline:none;-webkit-a
 .btn-ghost:active{border-color:var(--accent);color:var(--accent)}
 .btn-ghost:disabled{opacity:.4;pointer-events:none}
 .refresh-btn{
-  position:absolute;top:16px;left:50%;transform:translateX(-50%);
   background:var(--accent);color:var(--bg);border:none;
   padding:10px 24px;border-radius:40px;font-size:13px;font-weight:600;
   font-family:var(--font);
   display:flex;align-items:center;justify-content:center;gap:6px;
-  transition:all .15s;animation:slideDown .4s ease-out;
+  transition:all .15s;animation:slideUp .4s ease-out;
   box-shadow:0 4px 20px rgba(0,223,162,.3);
 }
-.refresh-btn:active{transform:translateX(-50%) scale(.95)}
-@keyframes slideDown{from{opacity:0;transform:translateX(-50%) translateY(-20px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
+.refresh-btn:active{transform:scale(.95)}
+@keyframes slideUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
 .w-version{
   position:absolute;bottom:16px;right:16px;
   font-family:var(--mono);font-size:10px;color:var(--dim2);
@@ -165,7 +164,6 @@ button{font-family:var(--font);cursor:pointer;border:none;outline:none;-webkit-a
 <div id="spinner-overlay"><div class="spinner"></div><div class="spinner-text" id="spinner-msg">Detecting edges…</div></div>
 
 <div id="screen-welcome">
-  <button class="refresh-btn hide" id="update-btn" onclick="location.reload()" title="Update available">↻ Update</button>
   <div class="w-icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M3 9h18"/><circle cx="15" cy="15" r="2"/></svg></div>
   <h1 class="w-title">Doc<em>Scan</em></h1>
   <p class="w-sub">Photograph a document, auto-detect edges, straighten to perfect corners, export as JPEG or PDF.</p>
@@ -173,7 +171,8 @@ button{font-family:var(--font);cursor:pointer;border:none;outline:none;-webkit-a
   <button class="btn-main" id="btn-cam" disabled onclick="startCamera()"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>Open Camera</button>
   <button class="btn-ghost" id="btn-upload" disabled onclick="pickFile()">Upload Image</button>
   <input type="file" id="file-input" accept="image/*" class="hide">
-  <div class="w-version" id="version-label">v1.03</div>
+  <button class="refresh-btn hide" id="update-btn" onclick="location.reload()" title="Update available">↻ Update available</button>
+  <div class="w-version" id="version-label">v1.05</div>
 </div>
 
 <div id="screen-camera">
@@ -670,20 +669,23 @@ function enhanceDocument(dataURL){
           let normGray=new cv.Mat();
           normF.convertTo(normGray,cv.CV_8U,230);
 
-          // ── Step 4: Aggressive contrast curve on the normalized gray ──
+          // ── Step 4: Contrast curve — preserve text, whiten paper ──
           let lut=new cv.Mat(1,256,cv.CV_8U);
           let lutData=lut.data;
           for(let i=0;i<256;i++){
             let n=i/255;
-            // Strong S-curve to separate text from paper
-            // Paper (bright) → pure white; Text (dark) → near black
-            if(n>0.72){
-              n=1.0; // everything above 72% → white
-            } else if(n<0.45){
-              n=Math.pow(n/0.45,2.0)*0.3; // darken text strongly
+            // Paper (very bright) → white; Text → darker; mid-tones preserved
+            if(n>0.85){
+              n=1.0; // only very bright paper → pure white
+            } else if(n>0.65){
+              // Light gray zone (form borders, light text) — gentle lift
+              n=0.55+((n-0.65)/(0.85-0.65))*0.45;
+            } else if(n<0.35){
+              // Dark text — make it darker/bolder
+              n=Math.pow(n/0.35,1.5)*0.2;
             } else {
-              // transition zone: steep ramp
-              n=0.3+((n-0.45)/(0.72-0.45))*0.7;
+              // Mid-tones (gray text, labels) — preserve but enhance
+              n=0.2+((n-0.35)/(0.65-0.35))*0.35;
             }
             lutData[i]=Math.max(0,Math.min(255,Math.round(n*255)));
           }
@@ -696,11 +698,11 @@ function enhanceDocument(dataURL){
           let sharpened=new cv.Mat();
           cv.addWeighted(contrasted,1.5,blurred,-0.5,0,sharpened);
 
-          // ── Step 6: Final cleanup — hard clamp ──
+          // ── Step 6: Final cleanup — gentle clamp ──
           let finalData=sharpened.data;
           for(let i=0;i<finalData.length;i++){
-            if(finalData[i]>230) finalData[i]=255;
-            if(finalData[i]<25) finalData[i]=0;
+            if(finalData[i]>245) finalData[i]=255;
+            if(finalData[i]<15) finalData[i]=0;
           }
 
           // ── Step 7: Convert back to RGBA for output ──
@@ -741,13 +743,14 @@ function enhanceDocument(dataURL){
       for(let i=0;i<w*h;i++){
         let n=(gray[i]-p2)/range;
         n=Math.max(0,Math.min(1,n));
-        // S-curve
-        if(n>0.72) n=1.0;
-        else if(n<0.45) n=Math.pow(n/0.45,2.0)*0.3;
-        else n=0.3+((n-0.45)/0.27)*0.7;
+        // S-curve — match OpenCV path
+        if(n>0.85) n=1.0;
+        else if(n>0.65) n=0.55+((n-0.65)/0.2)*0.45;
+        else if(n<0.35) n=Math.pow(n/0.35,1.5)*0.2;
+        else n=0.2+((n-0.35)/0.3)*0.35;
         let v=Math.round(n*255);
-        if(v>230) v=255;
-        if(v<25) v=0;
+        if(v>245) v=255;
+        if(v<15) v=0;
         const j=i*4;
         d[j]=d[j+1]=d[j+2]=v;
       }
@@ -876,7 +879,7 @@ function goHome(){resultDataURL='';showScreen('screen-welcome')}
 window.addEventListener('resize',()=>{if(document.getElementById('screen-crop').style.display==='flex')requestAnimationFrame(()=>initCropCanvas())});
 
 // ── VERSION CHECK ──
-const APP_VERSION='1.03';
+const APP_VERSION='1.05';
 
 async function checkForUpdate(){
   try{
