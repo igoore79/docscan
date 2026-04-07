@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DocScan Filter Tuner</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0b0b10;--s1:#12121a;--s2:#1a1a26;--s3:#242436;--accent:#00dfa2;--text:#e2e2ec;--dim:#55556a;--mono:'JetBrains Mono',monospace;--font:'Outfit',sans-serif}
+body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:100vh}
+
+.header{padding:16px 20px;background:var(--s1);border-bottom:1px solid var(--s2);display:flex;align-items:center;justify-content:space-between}
+.header h1{font-family:var(--mono);font-size:14px;color:var(--accent);text-transform:uppercase;letter-spacing:1.5px}
+
+.main{display:flex;flex-direction:column;height:calc(100vh - 56px)}
+@media(min-width:768px){.main{flex-direction:row}}
+
+/* Image area */
+.preview-area{flex:1;display:flex;align-items:center;justify-content:center;padding:12px;background:repeating-conic-gradient(var(--s1) 0% 25%,var(--bg) 0% 50%) 0 0/16px 16px;position:relative;min-height:40vh}
+#preview{max-width:100%;max-height:100%;border-radius:8px;box-shadow:0 4px 24px rgba(0,0,0,.4)}
+.upload-prompt{display:flex;flex-direction:column;align-items:center;gap:16px;color:var(--dim)}
+.upload-prompt button{background:var(--accent);color:var(--bg);border:none;padding:14px 36px;border-radius:40px;font-size:15px;font-weight:600;font-family:var(--font);cursor:pointer}
+.processing-badge{position:absolute;top:12px;right:12px;background:var(--s2);border:1px solid var(--s3);padding:6px 14px;border-radius:20px;font-family:var(--mono);font-size:11px;color:var(--dim)}
+
+/* Controls */
+.controls{width:100%;max-height:50vh;overflow-y:auto;background:var(--s1);border-top:1px solid var(--s2);padding:16px 20px;display:flex;flex-direction:column;gap:14px}
+@media(min-width:768px){.controls{width:360px;max-height:none;border-top:none;border-left:1px solid var(--s2)}}
+
+.ctrl-group{display:flex;flex-direction:column;gap:4px}
+.ctrl-group label{font-family:var(--mono);font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:1px;display:flex;justify-content:space-between}
+.ctrl-group label span{color:var(--accent);font-weight:600}
+.ctrl-group input[type=range]{
+  -webkit-appearance:none;width:100%;height:6px;border-radius:3px;
+  background:var(--s3);outline:none;
+}
+.ctrl-group input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none;width:20px;height:20px;border-radius:50%;
+  background:var(--accent);cursor:pointer;border:2px solid var(--bg);
+}
+.ctrl-group input[type=range]::-moz-range-thumb{
+  width:20px;height:20px;border-radius:50%;
+  background:var(--accent);cursor:pointer;border:2px solid var(--bg);
+}
+
+.section-title{font-size:12px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:1px;padding:8px 0 2px;border-top:1px solid var(--s3);margin-top:4px}
+.section-title:first-child{border-top:none;margin-top:0}
+
+.btn-row{display:flex;gap:8px;margin-top:8px}
+.btn-row button{
+  flex:1;padding:12px;border-radius:8px;font-size:12px;font-weight:600;
+  font-family:var(--mono);text-transform:uppercase;border:none;cursor:pointer;
+  transition:all .15s;
+}
+.btn-reset{background:var(--s2);color:var(--text);border:1px solid var(--s3)!important}
+.btn-export{background:var(--accent);color:var(--bg)}
+.btn-row button:active{transform:scale(.96)}
+
+.output-box{
+  background:var(--bg);border:1px solid var(--s3);border-radius:8px;
+  padding:12px;font-family:var(--mono);font-size:11px;color:var(--accent);
+  word-break:break-all;white-space:pre-wrap;max-height:120px;overflow-y:auto;
+  margin-top:8px;
+}
+
+input[type=file]{display:none}
+.cv-status{font-family:var(--mono);font-size:11px;color:var(--dim)}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>DocScan Filter Tuner</h1>
+  <div class="cv-status" id="cv-status">Loading OpenCV…</div>
+</div>
+
+<div class="main">
+  <div class="preview-area" id="preview-area">
+    <div class="upload-prompt" id="upload-prompt">
+      <p>Upload a <strong>raw warped image</strong> (after perspective correction, before enhancement)</p>
+      <button onclick="document.getElementById('file-in').click()">Choose Image</button>
+      <p style="font-size:12px">Tip: use "Original" filter in DocScan, save JPEG, upload here</p>
+    </div>
+    <canvas id="preview" style="display:none"></canvas>
+    <div class="processing-badge" id="proc-badge" style="display:none">Processing…</div>
+  </div>
+  <input type="file" id="file-in" accept="image/*">
+
+  <div class="controls">
+    <div class="section-title" style="border-top:none;margin-top:0">Background Removal</div>
+
+    <div class="ctrl-group">
+      <label>Blur Size (background estimation) <span id="v-blur">51</span></label>
+      <input type="range" id="s-blur" min="11" max="101" step="10" value="51">
+    </div>
+
+    <div class="ctrl-group">
+      <label>Normalization Scale <span id="v-normscale">230</span></label>
+      <input type="range" id="s-normscale" min="180" max="255" step="5" value="230">
+    </div>
+
+    <div class="section-title">Contrast Curve (4 zones)</div>
+
+    <div class="ctrl-group">
+      <label>Dark Text Threshold <span id="v-darkthresh">0.28</span></label>
+      <input type="range" id="s-darkthresh" min="0.10" max="0.50" step="0.01" value="0.28">
+    </div>
+
+    <div class="ctrl-group">
+      <label>Dark Text Output Max <span id="v-darkout">0.06</span></label>
+      <input type="range" id="s-darkout" min="0.00" max="0.30" step="0.01" value="0.06">
+    </div>
+
+    <div class="ctrl-group">
+      <label>Dark Text Gamma <span id="v-darkgamma">1.50</span></label>
+      <input type="range" id="s-darkgamma" min="0.50" max="3.00" step="0.10" value="1.50">
+    </div>
+
+    <div class="ctrl-group">
+      <label>Mid-tone Low Boundary <span id="v-midlow">0.28</span></label>
+      <input type="range" id="s-midlow" min="0.10" max="0.50" step="0.01" value="0.28">
+    </div>
+
+    <div class="ctrl-group">
+      <label>Mid-tone High Boundary <span id="v-midhigh">0.58</span></label>
+      <input type="range" id="s-midhigh" min="0.40" max="0.80" step="0.01" value="0.58">
+    </div>
+
+    <div class="ctrl-group">
+      <label>Mid-tone Output Low <span id="v-midoutlow">0.06</span></label>
+      <input type="range" id="s-midoutlow" min="0.00" max="0.40" step="0.01" value="0.06">
+    </div>
+
+    <div class="ctrl-group">
+      <label>Mid-tone Output High <span id="v-midouthigh">0.65</span></label>
+      <input type="range" id="s-midouthigh" min="0.30" max="0.90" step="0.01" value="0.65">
+    </div>
+
+    <div class="ctrl-group">
+      <label>Light Zone Boundary <span id="v-lighthigh">0.80</span></label>
+      <input type="range" id="s-lighthigh" min="0.60" max="0.95" step="0.01" value="0.80">
+    </div>
+
+    <div class="ctrl-group">
+      <label>Light Zone Output Low <span id="v-lightoutlow">0.65</span></label>
+      <input type="range" id="s-lightoutlow" min="0.40" max="0.90" step="0.01" value="0.65">
+    </div>
+
+    <div class="section-title">Sharpening</div>
+
+    <div class="ctrl-group">
+      <label>Sharpen Sigma <span id="v-sharpsigma">1.00</span></label>
+      <input type="range" id="s-sharpsigma" min="0.50" max="3.00" step="0.10" value="1.00">
+    </div>
+
+    <div class="ctrl-group">
+      <label>Sharpen Amount <span id="v-sharpamt">1.40</span></label>
+      <input type="range" id="s-sharpamt" min="1.00" max="2.50" step="0.05" value="1.40">
+    </div>
+
+    <div class="section-title">Final Clamp</div>
+
+    <div class="ctrl-group">
+      <label>White Clamp (above → 255) <span id="v-clampw">240</span></label>
+      <input type="range" id="s-clampw" min="200" max="254" step="1" value="240">
+    </div>
+
+    <div class="ctrl-group">
+      <label>Black Clamp (below → 0) <span id="v-clampb">12</span></label>
+      <input type="range" id="s-clampb" min="0" max="50" step="1" value="12">
+    </div>
+
+    <div class="btn-row">
+      <button class="btn-reset" onclick="resetDefaults()">Reset</button>
+      <button class="btn-export" onclick="exportSettings()">Export Settings</button>
+    </div>
+
+    <div class="output-box" id="output-box" style="display:none"></div>
+  </div>
+</div>
+
+<script async src="https://docs.opencv.org/4.9.0/opencv.js" onload="onCvReady()" onerror="onCvErr()"></script>
+<script>
+let cvReady=false, srcImg=null, origGray=null, normGray=null;
+
+function onCvReady(){
+  if(typeof cv!=='undefined'&&cv.Mat) cvReady=true;
+  else if(typeof cv!=='undefined') cv['onRuntimeInitialized']=()=>{cvReady=true;enableUI()};
+  enableUI();
+}
+function onCvErr(){document.getElementById('cv-status').textContent='OpenCV failed to load'}
+function enableUI(){document.getElementById('cv-status').textContent=cvReady?'✓ OpenCV ready':'⚠ Loading…'}
+
+// Slider IDs
+const sliders=['s-blur','s-normscale','s-darkthresh','s-darkout','s-darkgamma','s-midlow','s-midhigh','s-midoutlow','s-midouthigh','s-lighthigh','s-lightoutlow','s-sharpsigma','s-sharpamt','s-clampw','s-clampb'];
+const valIds=['v-blur','v-normscale','v-darkthresh','v-darkout','v-darkgamma','v-midlow','v-midhigh','v-midoutlow','v-midouthigh','v-lighthigh','v-lightoutlow','v-sharpsigma','v-sharpamt','v-clampw','v-clampb'];
+
+// Defaults
+const defaults={
+  's-blur':51,'s-normscale':230,
+  's-darkthresh':0.28,'s-darkout':0.06,'s-darkgamma':1.50,
+  's-midlow':0.28,'s-midhigh':0.58,'s-midoutlow':0.06,'s-midouthigh':0.65,
+  's-lighthigh':0.80,'s-lightoutlow':0.65,
+  's-sharpsigma':1.00,'s-sharpamt':1.40,
+  's-clampw':240,'s-clampb':12
+};
+
+function getParams(){
+  const p={};
+  sliders.forEach(id=>{p[id]=parseFloat(document.getElementById(id).value)});
+  return p;
+}
+
+function updateLabels(){
+  sliders.forEach((id,i)=>{
+    const el=document.getElementById(id);
+    document.getElementById(valIds[i]).textContent=el.value;
+  });
+}
+
+function resetDefaults(){
+  Object.entries(defaults).forEach(([id,val])=>{document.getElementById(id).value=val});
+  updateLabels();
+  processImage();
+}
+
+// Debounced processing
+let processTimer=null;
+sliders.forEach(id=>{
+  document.getElementById(id).addEventListener('input',()=>{
+    updateLabels();
+    clearTimeout(processTimer);
+    processTimer=setTimeout(processImage,150);
+  });
+});
+
+// File upload
+document.getElementById('file-in').addEventListener('change',e=>{
+  const f=e.target.files[0];if(!f)return;
+  const r=new FileReader();
+  r.onload=ev=>{
+    srcImg=new Image();
+    srcImg.onload=()=>{
+      document.getElementById('upload-prompt').style.display='none';
+      document.getElementById('preview').style.display='block';
+      precomputeNormalized();
+      processImage();
+    };
+    srcImg.src=ev.target.result;
+  };
+  r.readAsDataURL(f);
+  e.target.value='';
+});
+
+// Click preview area to upload
+document.getElementById('preview-area').addEventListener('click',e=>{
+  if(!srcImg) document.getElementById('file-in').click();
+});
+
+function precomputeNormalized(){
+  if(!cvReady||!srcImg)return;
+  const p=getParams();
+  const c=document.createElement('canvas');
+  c.width=srcImg.width;c.height=srcImg.height;
+  c.getContext('2d').drawImage(srcImg,0,0);
+
+  let src=cv.imread(c);
+  let gray=new cv.Mat();
+  cv.cvtColor(src,gray,cv.COLOR_RGBA2GRAY);
+  if(origGray) origGray.delete();
+  origGray=gray;
+  src.delete();
+
+  recomputeNorm();
+}
+
+function recomputeNorm(){
+  if(!origGray)return;
+  const p=getParams();
+  const blurSize=Math.round(p['s-blur'])|1; // must be odd
+  const normScale=p['s-normscale'];
+
+  let bgGray=new cv.Mat();
+  cv.GaussianBlur(origGray,bgGray,new cv.Size(blurSize,blurSize),0);
+  cv.GaussianBlur(bgGray,bgGray,new cv.Size(blurSize,blurSize),0);
+
+  let grayF=new cv.Mat(),bgF=new cv.Mat(),normF=new cv.Mat();
+  origGray.convertTo(grayF,cv.CV_32F);
+  bgGray.convertTo(bgF,cv.CV_32F);
+  let eps=new cv.Mat(bgF.rows,bgF.cols,cv.CV_32F,new cv.Scalar(1));
+  cv.add(bgF,eps,bgF);
+  cv.divide(grayF,bgF,normF);
+
+  if(normGray)normGray.delete();
+  normGray=new cv.Mat();
+  normF.convertTo(normGray,cv.CV_8U,normScale);
+
+  bgGray.delete();grayF.delete();bgF.delete();normF.delete();eps.delete();
+}
+
+function processImage(){
+  if(!cvReady||!srcImg)return;
+
+  const badge=document.getElementById('proc-badge');
+  badge.style.display='block';
+
+  // Use requestAnimationFrame so badge shows
+  requestAnimationFrame(()=>{
+    const p=getParams();
+
+    // Recompute normalization if blur/scale changed
+    recomputeNorm();
+
+    // Build LUT
+    const darkThresh=p['s-darkthresh'];
+    const darkOut=p['s-darkout'];
+    const darkGamma=p['s-darkgamma'];
+    const midLow=p['s-midlow'];
+    const midHigh=p['s-midhigh'];
+    const midOutLow=p['s-midoutlow'];
+    const midOutHigh=p['s-midouthigh'];
+    const lightHigh=p['s-lighthigh'];
+    const lightOutLow=p['s-lightoutlow'];
+
+    let lut=new cv.Mat(1,256,cv.CV_8U);
+    let lutData=lut.data;
+    for(let i=0;i<256;i++){
+      let n=i/255;
+      if(n>lightHigh){
+        n=1.0;
+      } else if(n>midHigh){
+        let t=(n-midHigh)/(lightHigh-midHigh);
+        n=lightOutLow+t*(1.0-lightOutLow);
+      } else if(n<darkThresh){
+        n=Math.pow(n/darkThresh,darkGamma)*darkOut;
+      } else {
+        let t=(n-midLow)/(midHigh-midLow);
+        t=Math.max(0,Math.min(1,t));
+        n=midOutLow+t*(midOutHigh-midOutLow);
+      }
+      lutData[i]=Math.max(0,Math.min(255,Math.round(n*255)));
+    }
+
+    let contrasted=new cv.Mat();
+    cv.LUT(normGray,lut,contrasted);
+
+    // Sharpen
+    const sigma=p['s-sharpsigma'];
+    const amt=p['s-sharpamt'];
+    let blurred=new cv.Mat();
+    cv.GaussianBlur(contrasted,blurred,new cv.Size(0,0),sigma);
+    let sharpened=new cv.Mat();
+    cv.addWeighted(contrasted,amt,blurred,-(amt-1),0,sharpened);
+
+    // Clamp
+    const clampW=p['s-clampw'];
+    const clampB=p['s-clampb'];
+    let data=sharpened.data;
+    for(let i=0;i<data.length;i++){
+      if(data[i]>clampW) data[i]=255;
+      if(data[i]<clampB) data[i]=0;
+    }
+
+    // Show
+    let outRgba=new cv.Mat();
+    cv.cvtColor(sharpened,outRgba,cv.COLOR_GRAY2RGBA);
+    const canvas=document.getElementById('preview');
+    canvas.width=outRgba.cols;canvas.height=outRgba.rows;
+    cv.imshow(canvas,outRgba);
+
+    lut.delete();contrasted.delete();blurred.delete();sharpened.delete();outRgba.delete();
+    badge.style.display='none';
+  });
+}
+
+function exportSettings(){
+  const p=getParams();
+  const out={
+    blurSize: Math.round(p['s-blur']),
+    normScale: p['s-normscale'],
+    darkThresh: p['s-darkthresh'],
+    darkOut: p['s-darkout'],
+    darkGamma: p['s-darkgamma'],
+    midLow: p['s-midlow'],
+    midHigh: p['s-midhigh'],
+    midOutLow: p['s-midoutlow'],
+    midOutHigh: p['s-midouthigh'],
+    lightHigh: p['s-lighthigh'],
+    lightOutLow: p['s-lightoutlow'],
+    sharpSigma: p['s-sharpsigma'],
+    sharpAmount: p['s-sharpamt'],
+    clampWhite: Math.round(p['s-clampw']),
+    clampBlack: Math.round(p['s-clampb'])
+  };
+  const box=document.getElementById('output-box');
+  box.style.display='block';
+  box.textContent=JSON.stringify(out,null,2);
+}
+</script>
+</body>
+</html>
