@@ -173,7 +173,7 @@ button{font-family:var(--font);cursor:pointer;border:none;outline:none;-webkit-a
   <button class="btn-main" id="btn-cam" disabled onclick="startCamera()"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>Open Camera</button>
   <button class="btn-ghost" id="btn-upload" disabled onclick="pickFile()">Upload Image</button>
   <input type="file" id="file-input" accept="image/*" class="hide">
-  <div class="w-version" id="version-label">v1.01</div>
+  <div class="w-version" id="version-label">v1.02</div>
 </div>
 
 <div id="screen-camera">
@@ -638,7 +638,6 @@ let rawResultDataURL=''; // stores the unfiltered warp result
 let currentFilter='enhanced';
 
 function enhanceDocument(dataURL){
-  // Load into canvas, apply OpenCV enhancement
   return new Promise(resolve=>{
     const img=new Image();
     img.onload=()=>{
@@ -649,84 +648,94 @@ function enhanceDocument(dataURL){
       if(cvReady){
         try{
           let src=cv.imread(c);
-          let gray=new cv.Mat();
-          let enhanced=new cv.Mat();
+          let rgb=new cv.Mat();
+          cv.cvtColor(src,rgb,cv.COLOR_RGBA2RGB);
 
-          // Convert to grayscale for analysis
-          cv.cvtColor(src,gray,cv.COLOR_RGBA2GRAY);
+          // ── Step 1: Estimate and remove background (shadow/lighting) ──
+          // Heavily blur to get the local background color
+          let bg=new cv.Mat();
+          cv.GaussianBlur(rgb,bg,new cv.Size(51,51),0);
+          // More blur for smoother background estimation
+          cv.GaussianBlur(bg,bg,new cv.Size(51,51),0);
 
-          // 1. Normalize lighting with CLAHE (Contrast Limited Adaptive Histogram Equalization)
-          // This evens out shadows and lighting variations
-          let clahe=new cv.CLAHE(2.0,new cv.Size(8,8));
-          clahe.apply(gray,enhanced);
+          // Divide original by background to normalize lighting
+          // result = (src / bg) * 255 — this removes shadows and uneven lighting
+          let normalized=new cv.Mat();
+          let bgFloat=new cv.Mat();
+          let srcFloat=new cv.Mat();
+          rgb.convertTo(srcFloat,cv.CV_32FC3);
+          bg.convertTo(bgFloat,cv.CV_32FC3);
 
-          // 2. Convert back to color but with corrected luminance
-          // Work in LAB color space for better results
-          let lab=new cv.Mat();
-          cv.cvtColor(src,lab,cv.COLOR_RGBA2RGB);
-          let labConv=new cv.Mat();
-          cv.cvtColor(lab,labConv,cv.COLOR_RGB2Lab);
+          // Avoid division by zero
+          let ones=new cv.Mat(bgFloat.rows,bgFloat.cols,cv.CV_32FC3,new cv.Scalar(1,1,1));
+          cv.add(bgFloat,ones,bgFloat);
+          cv.divide(srcFloat,bgFloat,normalized);
 
-          // Split LAB channels
-          let labChannels=new cv.MatVector();
-          cv.split(labConv,labChannels);
+          // Scale to 0-255 range
+          let normScaled=new cv.Mat();
+          cv.multiply(normalized,new cv.Scalar(220,220,220),normScaled);
+          let normU8=new cv.Mat();
+          normScaled.convertTo(normU8,cv.CV_8UC3);
 
-          // Replace L channel with CLAHE-enhanced version
-          let lChannel=labChannels.get(0);
-          let enhancedL=new cv.Mat();
-          clahe.apply(lChannel,enhancedL);
-
-          // Boost: push light pixels even lighter (paper whitening)
-          let lData=enhancedL.data;
-          for(let i=0;i<lData.length;i++){
-            let v=lData[i];
-            // Aggressive curve: push highlights to white, darken darks
-            if(v>160) v=Math.min(255, v+((v-160)/95)*60);
-            else if(v>100) v=v+((v-100)/60)*20;
-            else v=Math.max(0, v*0.85);
-            lData[i]=Math.round(v);
+          // ── Step 2: Aggressive contrast curve ──
+          // Push paper white to pure 255, darken text
+          let data=normU8.data;
+          for(let i=0;i<data.length;i++){
+            let v=data[i];
+            // S-curve: strong contrast
+            // Normalize to 0-1
+            let n=v/255;
+            // Aggressive S-curve with gamma
+            if(n>0.65){
+              // Push highlights hard to white
+              n=0.65+((n-0.65)/0.35)*0.35;
+              n=Math.pow(n,0.4); // gamma lift for whites
+            } else if(n<0.35){
+              // Push shadows darker
+              n=Math.pow(n,1.8);
+            } else {
+              // Mid-tones: increase contrast
+              n=0.35+((n-0.35)/0.3)*0.3;
+              n=Math.pow(n,0.7);
+            }
+            data[i]=Math.max(0,Math.min(255,Math.round(n*255)));
           }
 
-          // Recombine
-          let newChannels=new cv.MatVector();
-          newChannels.push_back(enhancedL);
-          newChannels.push_back(labChannels.get(1));
-          newChannels.push_back(labChannels.get(2));
-
-          let merged=new cv.Mat();
-          cv.merge(newChannels,merged);
-          let result=new cv.Mat();
-          cv.cvtColor(merged,result,cv.COLOR_Lab2RGB);
-
-          // 3. Slight sharpening via unsharp mask
-          let blurred=new cv.Mat();
-          cv.GaussianBlur(result,blurred,new cv.Size(0,0),2);
-          let sharpened=new cv.Mat();
-          cv.addWeighted(result,1.3,blurred,-0.3,0,sharpened);
-
-          // 4. Desaturate slightly (documents shouldn't be too colorful)
-          let hsvImg=new cv.Mat();
-          cv.cvtColor(sharpened,hsvImg,cv.COLOR_RGB2HSV);
+          // ── Step 3: Remove remaining color cast (near-full desaturation) ──
+          let hsv=new cv.Mat();
+          cv.cvtColor(normU8,hsv,cv.COLOR_RGB2HSV);
           let hsvCh=new cv.MatVector();
-          cv.split(hsvImg,hsvCh);
+          cv.split(hsv,hsvCh);
           let satCh=hsvCh.get(1);
           let sData=satCh.data;
-          for(let i=0;i<sData.length;i++) sData[i]=Math.round(sData[i]*0.4);
+          for(let i=0;i<sData.length;i++) sData[i]=Math.round(sData[i]*0.15); // Nearly grayscale
           let finalHsv=new cv.Mat();
           cv.merge(hsvCh,finalHsv);
           let finalRgb=new cv.Mat();
           cv.cvtColor(finalHsv,finalRgb,cv.COLOR_HSV2RGB);
 
+          // ── Step 4: Strong sharpening ──
+          let blurred=new cv.Mat();
+          cv.GaussianBlur(finalRgb,blurred,new cv.Size(0,0),1.5);
+          let sharpened=new cv.Mat();
+          cv.addWeighted(finalRgb,1.6,blurred,-0.6,0,sharpened);
+
+          // ── Step 5: Final white clamp — anything above 240 → 255 ──
+          let sharpData=sharpened.data;
+          for(let i=0;i<sharpData.length;i++){
+            if(sharpData[i]>235) sharpData[i]=255;
+            if(sharpData[i]<20) sharpData[i]=0;
+          }
+
           // Output
           let outRgba=new cv.Mat();
-          cv.cvtColor(finalRgb,outRgba,cv.COLOR_RGB2RGBA);
+          cv.cvtColor(sharpened,outRgba,cv.COLOR_RGB2RGBA);
           cv.imshow(c,outRgba);
 
           // Cleanup
-          [src,gray,enhanced,lab,labConv,lChannel,enhancedL,merged,result,blurred,sharpened,
-           hsvImg,finalHsv,finalRgb,outRgba].forEach(m=>m.delete());
-          [labChannels,newChannels,hsvCh].forEach(v=>v.delete());
-          clahe.delete();
+          [src,rgb,bg,normalized,bgFloat,srcFloat,ones,normScaled,normU8,
+           hsv,finalHsv,finalRgb,blurred,sharpened,outRgba].forEach(m=>m.delete());
+          [hsvCh].forEach(v=>v.delete());
 
           resolve(c.toDataURL('image/jpeg',.92));
           return;
@@ -735,28 +744,32 @@ function enhanceDocument(dataURL){
         }
       }
 
-      // Fallback: simple JS contrast + white balance
+      // Fallback: JS-only enhancement
       const ctx=c.getContext('2d');
       const imgData=ctx.getImageData(0,0,c.width,c.height);
       const d=imgData.data;
-
-      // Find brightness range
-      let minB=255,maxB=0;
+      // Find brightness percentiles
+      const brights=[];
       for(let i=0;i<d.length;i+=4){
-        const br=0.299*d[i]+0.587*d[i+1]+0.114*d[i+2];
-        if(br<minB)minB=br;if(br>maxB)maxB=br;
+        brights.push(0.299*d[i]+0.587*d[i+1]+0.114*d[i+2]);
       }
-
-      // Stretch contrast and push whites
-      const range=maxB-minB||1;
+      brights.sort((a,b)=>a-b);
+      const p5=brights[Math.floor(brights.length*0.05)];
+      const p95=brights[Math.floor(brights.length*0.95)];
+      const range=p95-p5||1;
       for(let i=0;i<d.length;i+=4){
         for(let ch=0;ch<3;ch++){
-          let v=(d[i+ch]-minB)/range*255;
-          // Push highlights to white
-          if(v>180) v=Math.min(255, v+((v-180)/75)*40);
-          // Darken shadows
-          else if(v<80) v=v*0.8;
-          d[i+ch]=Math.max(0,Math.min(255,Math.round(v)));
+          let v=(d[i+ch]-p5)/range*255;
+          v=Math.max(0,Math.min(255,v));
+          // S-curve
+          let n=v/255;
+          if(n>0.6) n=Math.pow(n,0.4);
+          else if(n<0.3) n=Math.pow(n,1.8);
+          else n=Math.pow(n,0.7);
+          v=n*255;
+          if(v>235) v=255;
+          if(v<20) v=0;
+          d[i+ch]=Math.round(v);
         }
       }
       ctx.putImageData(imgData,0,0);
@@ -852,12 +865,19 @@ async function sharePDF(){
 function buildPdfBlob(){
   const img=document.getElementById('result-img'),c=document.createElement('canvas');c.width=img.naturalWidth;c.height=img.naturalHeight;c.getContext('2d').drawImage(img,0,0);
   const jdu=c.toDataURL('image/jpeg',.92),jb64=jdu.split(',')[1],jb=atob(jb64),jl=jb.length;
-  const pw=595.28,ph=841.89,ia=c.width/c.height,pa=pw/ph;let iw,ih;
-  if(ia>pa){iw=pw;ih=pw/ia}else{ih=ph;iw=ph*ia}const ix=(pw-iw)/2,iy=(ph-ih)/2;
+
+  // Page size: fit image to A4 width (595.28pt) preserving aspect ratio
+  // This way the image is never distorted — page height adapts to content
+  const imgAspect=c.width/c.height;
+  const pw=595.28;
+  const ph=pw/imgAspect;
+  // Image fills the entire page
+  const iw=pw,ih=ph,ix=0,iy=0;
+
   const off=[];let pdf='%PDF-1.4\n';
   off.push(pdf.length);pdf+='1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n';
   off.push(pdf.length);pdf+='2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n';
-  off.push(pdf.length);pdf+=`3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pw} ${ph}] /Contents 4 0 R /Resources << /XObject << /Img 5 0 R >> >> >>\nendobj\n`;
+  off.push(pdf.length);pdf+=`3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pw.toFixed(2)} ${ph.toFixed(2)}] /Contents 4 0 R /Resources << /XObject << /Img 5 0 R >> >> >>\nendobj\n`;
   const stm=`q\n${iw.toFixed(2)} 0 0 ${ih.toFixed(2)} ${ix.toFixed(2)} ${iy.toFixed(2)} cm\n/Img Do\nQ\n`;
   off.push(pdf.length);pdf+=`4 0 obj\n<< /Length ${stm.length} >>\nstream\n${stm}endstream\nendobj\n`;
   off.push(pdf.length);
@@ -877,7 +897,7 @@ function goHome(){resultDataURL='';showScreen('screen-welcome')}
 window.addEventListener('resize',()=>{if(document.getElementById('screen-crop').style.display==='flex')requestAnimationFrame(()=>initCropCanvas())});
 
 // ── VERSION CHECK ──
-const APP_VERSION='1.01';
+const APP_VERSION='1.02';
 
 async function checkForUpdate(){
   try{
