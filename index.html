@@ -69,6 +69,21 @@ button{font-family:var(--font);cursor:pointer;border:none;outline:none;-webkit-a
 }
 .btn-ghost:active{border-color:var(--accent);color:var(--accent)}
 .btn-ghost:disabled{opacity:.4;pointer-events:none}
+.refresh-btn{
+  position:absolute;top:16px;left:50%;transform:translateX(-50%);
+  background:var(--accent);color:var(--bg);border:none;
+  padding:10px 24px;border-radius:40px;font-size:13px;font-weight:600;
+  font-family:var(--font);
+  display:flex;align-items:center;justify-content:center;gap:6px;
+  transition:all .15s;animation:slideDown .4s ease-out;
+  box-shadow:0 4px 20px rgba(0,223,162,.3);
+}
+.refresh-btn:active{transform:translateX(-50%) scale(.95)}
+@keyframes slideDown{from{opacity:0;transform:translateX(-50%) translateY(-20px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
+.w-version{
+  position:absolute;bottom:16px;right:16px;
+  font-family:var(--mono);font-size:10px;color:var(--dim2);
+}
 
 #screen-camera{display:none;flex-direction:column;height:100%;background:#000;position:relative}
 #video{width:100%;height:100%;object-fit:cover}
@@ -150,6 +165,7 @@ button{font-family:var(--font);cursor:pointer;border:none;outline:none;-webkit-a
 <div id="spinner-overlay"><div class="spinner"></div><div class="spinner-text" id="spinner-msg">Detecting edges…</div></div>
 
 <div id="screen-welcome">
+  <button class="refresh-btn hide" id="update-btn" onclick="location.reload()" title="Update available">↻ Update</button>
   <div class="w-icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M3 9h18"/><circle cx="15" cy="15" r="2"/></svg></div>
   <h1 class="w-title">Doc<em>Scan</em></h1>
   <p class="w-sub">Photograph a document, auto-detect edges, straighten to perfect corners, export as JPEG or PDF.</p>
@@ -157,6 +173,7 @@ button{font-family:var(--font);cursor:pointer;border:none;outline:none;-webkit-a
   <button class="btn-main" id="btn-cam" disabled onclick="startCamera()"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>Open Camera</button>
   <button class="btn-ghost" id="btn-upload" disabled onclick="pickFile()">Upload Image</button>
   <input type="file" id="file-input" accept="image/*" class="hide">
+  <div class="w-version" id="version-label">v1.01</div>
 </div>
 
 <div id="screen-camera">
@@ -858,6 +875,28 @@ function ts(){const d=new Date();return d.getFullYear()+''+String(d.getMonth()+1
 function backFromResult(){showScreen('screen-crop');requestAnimationFrame(()=>requestAnimationFrame(()=>initCropCanvas()))}
 function goHome(){resultDataURL='';showScreen('screen-welcome')}
 window.addEventListener('resize',()=>{if(document.getElementById('screen-crop').style.display==='flex')requestAnimationFrame(()=>initCropCanvas())});
+
+// ── VERSION CHECK ──
+const APP_VERSION='1.01';
+
+async function checkForUpdate(){
+  try{
+    // Fetch the live page with cache-busting
+    const resp=await fetch(location.href+'?_cb='+Date.now(),{cache:'no-store'});
+    if(!resp.ok)return;
+    const html=await resp.text();
+    // Look for the version in the fetched HTML
+    const match=html.match(/APP_VERSION='([\d.]+)'/);
+    if(match&&match[1]!==APP_VERSION){
+      document.getElementById('update-btn').classList.remove('hide');
+    }
+  }catch(e){/* offline or fetch failed — ignore */}
+}
+
+// Check for updates shortly after load
+setTimeout(checkForUpdate,3000);
+// Also check periodically if the app stays open
+setInterval(checkForUpdate,5*60*1000);
 </script>
 </body>
 </html>
