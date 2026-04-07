@@ -173,7 +173,7 @@ button{font-family:var(--font);cursor:pointer;border:none;outline:none;-webkit-a
   <button class="btn-main" id="btn-cam" disabled onclick="startCamera()"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>Open Camera</button>
   <button class="btn-ghost" id="btn-upload" disabled onclick="pickFile()">Upload Image</button>
   <input type="file" id="file-input" accept="image/*" class="hide">
-  <div class="w-version" id="version-label">v1.02</div>
+  <div class="w-version" id="version-label">v1.03</div>
 </div>
 
 <div id="screen-camera">
@@ -648,94 +648,69 @@ function enhanceDocument(dataURL){
       if(cvReady){
         try{
           let src=cv.imread(c);
-          let rgb=new cv.Mat();
-          cv.cvtColor(src,rgb,cv.COLOR_RGBA2RGB);
 
-          // ── Step 1: Estimate and remove background (shadow/lighting) ──
-          // Heavily blur to get the local background color
-          let bg=new cv.Mat();
-          cv.GaussianBlur(rgb,bg,new cv.Size(51,51),0);
-          // More blur for smoother background estimation
-          cv.GaussianBlur(bg,bg,new cv.Size(51,51),0);
+          // ── Step 1: Convert to grayscale for lighting analysis ──
+          let gray=new cv.Mat();
+          cv.cvtColor(src,gray,cv.COLOR_RGBA2GRAY);
 
-          // Divide original by background to normalize lighting
-          // result = (src / bg) * 255 — this removes shadows and uneven lighting
-          let normalized=new cv.Mat();
-          let bgFloat=new cv.Mat();
-          let srcFloat=new cv.Mat();
-          rgb.convertTo(srcFloat,cv.CV_32FC3);
-          bg.convertTo(bgFloat,cv.CV_32FC3);
+          // ── Step 2: Estimate background lighting (large blur = local background) ──
+          let bgGray=new cv.Mat();
+          cv.GaussianBlur(gray,bgGray,new cv.Size(51,51),0);
+          cv.GaussianBlur(bgGray,bgGray,new cv.Size(51,51),0);
 
-          // Avoid division by zero
-          let ones=new cv.Mat(bgFloat.rows,bgFloat.cols,cv.CV_32FC3,new cv.Scalar(1,1,1));
-          cv.add(bgFloat,ones,bgFloat);
-          cv.divide(srcFloat,bgFloat,normalized);
+          // ── Step 3: Normalize: remove shadows by dividing gray by background ──
+          let grayF=new cv.Mat(), bgF=new cv.Mat(), normF=new cv.Mat();
+          gray.convertTo(grayF,cv.CV_32F);
+          bgGray.convertTo(bgF,cv.CV_32F);
+          // Add small value to avoid div by zero
+          let epsilon=new cv.Mat(bgF.rows,bgF.cols,cv.CV_32F,new cv.Scalar(1));
+          cv.add(bgF,epsilon,bgF);
+          cv.divide(grayF,bgF,normF);
+          // Scale to 0-255
+          let normGray=new cv.Mat();
+          normF.convertTo(normGray,cv.CV_8U,230);
 
-          // Scale to 0-255 range
-          let normScaled=new cv.Mat();
-          cv.multiply(normalized,new cv.Scalar(220,220,220),normScaled);
-          let normU8=new cv.Mat();
-          normScaled.convertTo(normU8,cv.CV_8UC3);
-
-          // ── Step 2: Aggressive contrast curve ──
-          // Push paper white to pure 255, darken text
-          let data=normU8.data;
-          for(let i=0;i<data.length;i++){
-            let v=data[i];
-            // S-curve: strong contrast
-            // Normalize to 0-1
-            let n=v/255;
-            // Aggressive S-curve with gamma
-            if(n>0.65){
-              // Push highlights hard to white
-              n=0.65+((n-0.65)/0.35)*0.35;
-              n=Math.pow(n,0.4); // gamma lift for whites
-            } else if(n<0.35){
-              // Push shadows darker
-              n=Math.pow(n,1.8);
+          // ── Step 4: Aggressive contrast curve on the normalized gray ──
+          let lut=new cv.Mat(1,256,cv.CV_8U);
+          let lutData=lut.data;
+          for(let i=0;i<256;i++){
+            let n=i/255;
+            // Strong S-curve to separate text from paper
+            // Paper (bright) → pure white; Text (dark) → near black
+            if(n>0.72){
+              n=1.0; // everything above 72% → white
+            } else if(n<0.45){
+              n=Math.pow(n/0.45,2.0)*0.3; // darken text strongly
             } else {
-              // Mid-tones: increase contrast
-              n=0.35+((n-0.35)/0.3)*0.3;
-              n=Math.pow(n,0.7);
+              // transition zone: steep ramp
+              n=0.3+((n-0.45)/(0.72-0.45))*0.7;
             }
-            data[i]=Math.max(0,Math.min(255,Math.round(n*255)));
+            lutData[i]=Math.max(0,Math.min(255,Math.round(n*255)));
           }
+          let contrasted=new cv.Mat();
+          cv.LUT(normGray,lut,contrasted);
 
-          // ── Step 3: Remove remaining color cast (near-full desaturation) ──
-          let hsv=new cv.Mat();
-          cv.cvtColor(normU8,hsv,cv.COLOR_RGB2HSV);
-          let hsvCh=new cv.MatVector();
-          cv.split(hsv,hsvCh);
-          let satCh=hsvCh.get(1);
-          let sData=satCh.data;
-          for(let i=0;i<sData.length;i++) sData[i]=Math.round(sData[i]*0.15); // Nearly grayscale
-          let finalHsv=new cv.Mat();
-          cv.merge(hsvCh,finalHsv);
-          let finalRgb=new cv.Mat();
-          cv.cvtColor(finalHsv,finalRgb,cv.COLOR_HSV2RGB);
-
-          // ── Step 4: Strong sharpening ──
+          // ── Step 5: Sharpening via unsharp mask ──
           let blurred=new cv.Mat();
-          cv.GaussianBlur(finalRgb,blurred,new cv.Size(0,0),1.5);
+          cv.GaussianBlur(contrasted,blurred,new cv.Size(0,0),1.2);
           let sharpened=new cv.Mat();
-          cv.addWeighted(finalRgb,1.6,blurred,-0.6,0,sharpened);
+          cv.addWeighted(contrasted,1.5,blurred,-0.5,0,sharpened);
 
-          // ── Step 5: Final white clamp — anything above 240 → 255 ──
-          let sharpData=sharpened.data;
-          for(let i=0;i<sharpData.length;i++){
-            if(sharpData[i]>235) sharpData[i]=255;
-            if(sharpData[i]<20) sharpData[i]=0;
+          // ── Step 6: Final cleanup — hard clamp ──
+          let finalData=sharpened.data;
+          for(let i=0;i<finalData.length;i++){
+            if(finalData[i]>230) finalData[i]=255;
+            if(finalData[i]<25) finalData[i]=0;
           }
 
-          // Output
+          // ── Step 7: Convert back to RGBA for output ──
           let outRgba=new cv.Mat();
-          cv.cvtColor(sharpened,outRgba,cv.COLOR_RGB2RGBA);
+          cv.cvtColor(sharpened,outRgba,cv.COLOR_GRAY2RGBA);
           cv.imshow(c,outRgba);
 
           // Cleanup
-          [src,rgb,bg,normalized,bgFloat,srcFloat,ones,normScaled,normU8,
-           hsv,finalHsv,finalRgb,blurred,sharpened,outRgba].forEach(m=>m.delete());
-          [hsvCh].forEach(v=>v.delete());
+          [src,gray,bgGray,grayF,bgF,normF,epsilon,normGray,lut,contrasted,
+           blurred,sharpened,outRgba].forEach(m=>m.delete());
 
           resolve(c.toDataURL('image/jpeg',.92));
           return;
@@ -744,33 +719,37 @@ function enhanceDocument(dataURL){
         }
       }
 
-      // Fallback: JS-only enhancement
+      // Fallback: JS-only enhancement (grayscale approach)
       const ctx=c.getContext('2d');
       const imgData=ctx.getImageData(0,0,c.width,c.height);
       const d=imgData.data;
-      // Find brightness percentiles
-      const brights=[];
-      for(let i=0;i<d.length;i+=4){
-        brights.push(0.299*d[i]+0.587*d[i+1]+0.114*d[i+2]);
+      const w=c.width, h=c.height;
+
+      // Convert to grayscale
+      const gray=new Float32Array(w*h);
+      for(let i=0;i<w*h;i++){
+        const j=i*4;
+        gray[i]=0.299*d[j]+0.587*d[j+1]+0.114*d[j+2];
       }
-      brights.sort((a,b)=>a-b);
-      const p5=brights[Math.floor(brights.length*0.05)];
-      const p95=brights[Math.floor(brights.length*0.95)];
-      const range=p95-p5||1;
-      for(let i=0;i<d.length;i+=4){
-        for(let ch=0;ch<3;ch++){
-          let v=(d[i+ch]-p5)/range*255;
-          v=Math.max(0,Math.min(255,v));
-          // S-curve
-          let n=v/255;
-          if(n>0.6) n=Math.pow(n,0.4);
-          else if(n<0.3) n=Math.pow(n,1.8);
-          else n=Math.pow(n,0.7);
-          v=n*255;
-          if(v>235) v=255;
-          if(v<20) v=0;
-          d[i+ch]=Math.round(v);
-        }
+
+      // Find percentiles for contrast stretching
+      const sorted=[...gray].sort((a,b)=>a-b);
+      const p2=sorted[Math.floor(sorted.length*0.02)];
+      const p98=sorted[Math.floor(sorted.length*0.98)];
+      const range=p98-p2||1;
+
+      for(let i=0;i<w*h;i++){
+        let n=(gray[i]-p2)/range;
+        n=Math.max(0,Math.min(1,n));
+        // S-curve
+        if(n>0.72) n=1.0;
+        else if(n<0.45) n=Math.pow(n/0.45,2.0)*0.3;
+        else n=0.3+((n-0.45)/0.27)*0.7;
+        let v=Math.round(n*255);
+        if(v>230) v=255;
+        if(v<25) v=0;
+        const j=i*4;
+        d[j]=d[j+1]=d[j+2]=v;
       }
       ctx.putImageData(imgData,0,0);
       resolve(c.toDataURL('image/jpeg',.92));
@@ -897,7 +876,7 @@ function goHome(){resultDataURL='';showScreen('screen-welcome')}
 window.addEventListener('resize',()=>{if(document.getElementById('screen-crop').style.display==='flex')requestAnimationFrame(()=>initCropCanvas())});
 
 // ── VERSION CHECK ──
-const APP_VERSION='1.02';
+const APP_VERSION='1.03';
 
 async function checkForUpdate(){
   try{
