@@ -230,83 +230,256 @@ document.getElementById('file-input').addEventListener('change',e=>{
 });
 
 // ══════════════════════════════════════════
-// AUTO EDGE DETECTION (pure JS)
+// AUTO EDGE DETECTION (pure JS) v2
+// Strategy: brightness threshold to find paper
+// → morphological close → boundary trace
+// → convex hull → approx quad
+// Also: Canny-style edge + Hough lines fallback
 // ══════════════════════════════════════════
+
 function toGray(imgData){
-  const d=imgData.data,w=imgData.width,h=imgData.height,g=new Float32Array(w*h);
-  for(let i=0;i<w*h;i++){const j=i*4;g[i]=.299*d[j]+.587*d[j+1]+.114*d[j+2]}return g;
+  const d=imgData.data,n=imgData.width*imgData.height,g=new Float32Array(n);
+  for(let i=0;i<n;i++){const j=i*4;g[i]=.299*d[j]+.587*d[j+1]+.114*d[j+2]}return g;
 }
+
 function gBlur(g,w,h){
-  const k=[1,4,6,4,1,4,16,24,16,4,6,24,36,24,6,4,16,24,16,4,1,4,6,4,1],o=new Float32Array(w*h);
-  for(let y=2;y<h-2;y++)for(let x=2;x<w-2;x++){let s=0,ki=0;for(let ky=-2;ky<=2;ky++)for(let kx=-2;kx<=2;kx++)s+=g[(y+ky)*w+(x+kx)]*k[ki++];o[y*w+x]=s/256}return o;
+  const k=[1,4,6,4,1, 4,16,24,16,4, 6,24,36,24,6, 4,16,24,16,4, 1,4,6,4,1];
+  const o=new Float32Array(w*h);
+  for(let y=2;y<h-2;y++)for(let x=2;x<w-2;x++){
+    let s=0,ki=0;
+    for(let ky=-2;ky<=2;ky++)for(let kx=-2;kx<=2;kx++) s+=g[(y+ky)*w+(x+kx)]*k[ki++];
+    o[y*w+x]=s/256;
+  }
+  return o;
 }
+
 function sobel(g,w,h){
-  const m=new Float32Array(w*h);
+  const mx=new Float32Array(w*h),my=new Float32Array(w*h),mag=new Float32Array(w*h);
   for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){
     const gx=-g[(y-1)*w+x-1]-2*g[y*w+x-1]-g[(y+1)*w+x-1]+g[(y-1)*w+x+1]+2*g[y*w+x+1]+g[(y+1)*w+x+1];
     const gy=-g[(y-1)*w+x-1]-2*g[(y-1)*w+x]-g[(y-1)*w+x+1]+g[(y+1)*w+x-1]+2*g[(y+1)*w+x]+g[(y+1)*w+x+1];
-    m[y*w+x]=Math.sqrt(gx*gx+gy*gy)}return m;
+    mx[y*w+x]=gx; my[y*w+x]=gy; mag[y*w+x]=Math.sqrt(gx*gx+gy*gy);
+  }
+  return {mag,mx,my};
 }
-function thresh(m,w,h,pct){
-  const v=[...m].filter(x=>x>0).sort((a,b)=>a-b),idx=Math.floor(v.length*(1-pct)),t=v[idx]||50;
-  const b=new Uint8Array(w*h);for(let i=0;i<w*h;i++)b[i]=m[i]>=t?255:0;return b;
+
+// Adaptive threshold: bright pixels = paper candidate
+function brightMask(gray,w,h){
+  // Compute mean brightness
+  let sum=0; for(let i=0;i<w*h;i++) sum+=gray[i];
+  const mean=sum/(w*h);
+  // Threshold slightly below mean to catch paper (paper is usually brighter than background)
+  const t=Math.max(mean*0.85, 100);
+  const mask=new Uint8Array(w*h);
+  for(let i=0;i<w*h;i++) mask[i]=gray[i]>t?255:0;
+  return mask;
+}
+
+// Morphological operations
+function erode(b,w,h,r){
+  const o=new Uint8Array(w*h);
+  for(let y=r;y<h-r;y++)for(let x=r;x<w-r;x++){
+    let all=true;
+    for(let dy=-r;dy<=r&&all;dy++)for(let dx=-r;dx<=r&&all;dx++) if(!b[(y+dy)*w+(x+dx)]) all=false;
+    if(all) o[y*w+x]=255;
+  }
+  return o;
 }
 function dilate(b,w,h,r){
   const o=new Uint8Array(w*h);
   for(let y=r;y<h-r;y++)for(let x=r;x<w-r;x++){
-    let f=false;for(let dy=-r;dy<=r&&!f;dy++)for(let dx=-r;dx<=r&&!f;dx++)if(b[(y+dy)*w+(x+dx)])f=true;
-    if(f)o[y*w+x]=255}return o;
+    let f=false;
+    for(let dy=-r;dy<=r&&!f;dy++)for(let dx=-r;dx<=r&&!f;dx++) if(b[(y+dy)*w+(x+dx)]) f=true;
+    if(f) o[y*w+x]=255;
+  }
+  return o;
 }
-function findContours(bin,w,h){
-  const vis=new Uint8Array(w*h),cs=[];
+function morphClose(b,w,h,r){ return erode(dilate(b,w,h,r),w,h,r); }
+function morphOpen(b,w,h,r){ return dilate(erode(b,w,h,r),w,h,r); }
+
+// Boundary trace — find pixels on the edge of a binary mask
+function traceBoundary(mask,w,h){
+  const pts=[];
   for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){
-    if(!bin[y*w+x]||vis[y*w+x])continue;
-    const pts=[],q=[[x,y]];vis[y*w+x]=1;
-    while(q.length){const[cx,cy]=q.shift();pts.push({x:cx,y:cy});
-      for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){if(!dx&&!dy)continue;
-        const nx=cx+dx,ny=cy+dy;
-        if(nx>=0&&nx<w&&ny>=0&&ny<h&&bin[ny*w+nx]&&!vis[ny*w+nx]){vis[ny*w+nx]=1;q.push([nx,ny])}
-      }if(pts.length>50000)break}
-    if(pts.length>80)cs.push(pts)}
-  return cs;
+    if(!mask[y*w+x]) continue;
+    // Check if any 4-neighbor is background
+    if(!mask[(y-1)*w+x]||!mask[(y+1)*w+x]||!mask[y*w+x-1]||!mask[y*w+x+1])
+      pts.push({x,y});
+  }
+  return pts;
 }
+
+// Convex hull (Andrew's monotone chain)
 function convexHull(points){
-  const pts=[...points].sort((a,b)=>a.x-b.x||a.y-b.y);if(pts.length<3)return pts;
+  const pts=[...points].sort((a,b)=>a.x-b.x||a.y-b.y);
+  if(pts.length<3) return pts;
   const cross=(O,A,B)=>(A.x-O.x)*(B.y-O.y)-(A.y-O.y)*(B.x-O.x);
-  const lo=[];for(const p of pts){while(lo.length>=2&&cross(lo[lo.length-2],lo[lo.length-1],p)<=0)lo.pop();lo.push(p)}
-  const up=[];for(let i=pts.length-1;i>=0;i--){const p=pts[i];while(up.length>=2&&cross(up[up.length-2],up[up.length-1],p)<=0)up.pop();up.push(p)}
-  lo.pop();up.pop();return lo.concat(up);
+  const lo=[];
+  for(const p of pts){while(lo.length>=2&&cross(lo[lo.length-2],lo[lo.length-1],p)<=0)lo.pop();lo.push(p)}
+  const up=[];
+  for(let i=pts.length-1;i>=0;i--){const p=pts[i];while(up.length>=2&&cross(up[up.length-2],up[up.length-1],p)<=0)up.pop();up.push(p)}
+  lo.pop();up.pop();
+  return lo.concat(up);
 }
+
+// Ramer-Douglas-Peucker
 function approxPoly(pts,eps){
-  if(pts.length<3)return pts;let mx=0,idx=0;const f=pts[0],l=pts[pts.length-1];
+  if(pts.length<3) return pts;
+  let mx=0,idx=0;const f=pts[0],l=pts[pts.length-1];
   for(let i=1;i<pts.length-1;i++){const d=ptLineDist(pts[i],f,l);if(d>mx){mx=d;idx=i}}
   if(mx>eps){const r1=approxPoly(pts.slice(0,idx+1),eps),r2=approxPoly(pts.slice(idx),eps);return r1.slice(0,-1).concat(r2)}
   return[f,l];
 }
-function ptLineDist(p,a,b){const dx=b.x-a.x,dy=b.y-a.y,len=Math.sqrt(dx*dx+dy*dy);if(!len)return Math.hypot(p.x-a.x,p.y-a.y);return Math.abs(dx*(a.y-p.y)-dy*(a.x-p.x))/len}
-function orderCorners(pts){const s=[...pts].sort((a,b)=>a.y-b.y),top=s.slice(0,2).sort((a,b)=>a.x-b.x),bot=s.slice(2,4).sort((a,b)=>a.x-b.x);return[top[0],top[1],bot[1],bot[0]]}
-function quadArea(p){let a=0;for(let i=0;i<4;i++){const j=(i+1)%4;a+=p[i].x*p[j].y-p[j].x*p[i].y}return Math.abs(a)/2}
-function angBtw(a,b,c){const v1={x:a.x-b.x,y:a.y-b.y},v2={x:c.x-b.x,y:c.y-b.y},dot=v1.x*v2.x+v1.y*v2.y,m1=Math.hypot(v1.x,v1.y),m2=Math.hypot(v2.x,v2.y);if(!m1||!m2)return 0;return Math.acos(Math.max(-1,Math.min(1,dot/(m1*m2))))*180/Math.PI}
-function isGoodQuad(p,iw,ih){const a=quadArea(p),ia=iw*ih;if(a<ia*.05||a>ia*.98)return false;for(let i=0;i<4;i++){const ang=angBtw(p[i],p[(i+1)%4],p[(i+2)%4]);if(ang<40||ang>140)return false}return true}
-function hullPerim(p){let s=0;for(let i=0;i<p.length;i++){const j=(i+1)%p.length;s+=Math.hypot(p[j].x-p[i].x,p[j].y-p[i].y)}return s}
+function ptLineDist(p,a,b){
+  const dx=b.x-a.x,dy=b.y-a.y,len=Math.sqrt(dx*dx+dy*dy);
+  if(!len) return Math.hypot(p.x-a.x,p.y-a.y);
+  return Math.abs(dx*(a.y-p.y)-dy*(a.x-p.x))/len;
+}
 
+function orderCorners(pts){
+  // Centroid
+  let cx=0,cy=0;pts.forEach(p=>{cx+=p.x;cy+=p.y});cx/=4;cy/=4;
+  // Sort by angle from centroid
+  const angled=pts.map(p=>({...p,ang:Math.atan2(p.y-cy,p.x-cx)}));
+  angled.sort((a,b)=>a.ang-b.ang);
+  // Now sorted CCW; find TL (smallest x+y)
+  let minSum=Infinity,minIdx=0;
+  angled.forEach((p,i)=>{const s=p.x+p.y;if(s<minSum){minSum=s;minIdx=i}});
+  // Rotate so TL is first
+  const rotated=[...angled.slice(minIdx),...angled.slice(0,minIdx)];
+  // TL, BL, BR, TR (CCW) → we want TL, TR, BR, BL
+  return [rotated[0],rotated[3],rotated[2],rotated[1]];
+}
+
+function quadArea(p){let a=0;for(let i=0;i<4;i++){const j=(i+1)%4;a+=p[i].x*p[j].y-p[j].x*p[i].y}return Math.abs(a)/2}
+
+function angBtw(a,b,c){
+  const v1={x:a.x-b.x,y:a.y-b.y},v2={x:c.x-b.x,y:c.y-b.y};
+  const dot=v1.x*v2.x+v1.y*v2.y,m1=Math.hypot(v1.x,v1.y),m2=Math.hypot(v2.x,v2.y);
+  if(!m1||!m2) return 0;
+  return Math.acos(Math.max(-1,Math.min(1,dot/(m1*m2))))*180/Math.PI;
+}
+
+function isGoodQuad(p,iw,ih){
+  const a=quadArea(p),ia=iw*ih;
+  // Must be between 8% and 90% of image area (reject full-frame grabs)
+  if(a<ia*.08 || a>ia*.90) return false;
+  // All corners must be inset from edges by at least 2%
+  const m=Math.min(iw,ih)*0.02;
+  for(const pt of p){
+    if(pt.x<m||pt.y<m||pt.x>iw-m||pt.y>ih-m) return false;
+  }
+  // Angles should be roughly quadrilateral (50-130 degrees)
+  for(let i=0;i<4;i++){
+    const ang=angBtw(p[i],p[(i+1)%4],p[(i+2)%4]);
+    if(ang<50||ang>130) return false;
+  }
+  return true;
+}
+
+function hullPerim(p){
+  let s=0;for(let i=0;i<p.length;i++){const j=(i+1)%p.length;s+=Math.hypot(p[j].x-p[i].x,p[j].y-p[i].y)}return s;
+}
+
+// ── Method 1: Brightness-based paper detection ──
+function detectByBrightness(gray,w,h){
+  const bright=brightMask(gray,w,h);
+  // Clean up noise: open then close
+  let cleaned=morphOpen(bright,w,h,3);
+  cleaned=morphClose(cleaned,w,h,5);
+
+  // Find the largest connected bright region
+  const vis=new Uint8Array(w*h);
+  let bestPts=null, bestSize=0;
+  for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){
+    if(!cleaned[y*w+x]||vis[y*w+x]) continue;
+    // BFS flood fill
+    const region=[];const q=[[x,y]];vis[y*w+x]=1;
+    while(q.length>0&&region.length<100000){
+      const[cx,cy]=q.shift();region.push({x:cx,y:cy});
+      for(const[dx,dy] of [[-1,0],[1,0],[0,-1],[0,1]]){
+        const nx=cx+dx,ny=cy+dy;
+        if(nx>=0&&nx<w&&ny>=0&&ny<h&&cleaned[ny*w+nx]&&!vis[ny*w+nx]){
+          vis[ny*w+nx]=1;q.push([nx,ny]);
+        }
+      }
+    }
+    if(region.length>bestSize){bestSize=region.length;bestPts=region}
+  }
+
+  if(!bestPts||bestPts.length<100) return null;
+
+  // Build mask of just the largest region, get its boundary
+  const regionMask=new Uint8Array(w*h);
+  for(const p of bestPts) regionMask[p.y*w+p.x]=255;
+  const boundary=traceBoundary(regionMask,w,h);
+  if(boundary.length<20) return null;
+
+  const hull=convexHull(boundary);
+  if(hull.length<4) return null;
+  const per=hullPerim(hull);
+
+  // Try to approximate to 4-sided polygon
+  for(let ep=0.015;ep<=0.12;ep+=0.005){
+    const ap=approxPoly(hull,ep*per);
+    if(ap.length===4){
+      const ord=orderCorners(ap);
+      if(isGoodQuad(ord,w,h)) return ord;
+    }
+  }
+  return null;
+}
+
+// ── Method 2: Edge-based with Hough lines ──
+function detectByEdges(gray,w,h){
+  const bl=gBlur(gray,w,h);
+  const {mag}=sobel(bl,w,h);
+
+  // Strong edge threshold
+  const vals=[];for(let i=0;i<w*h;i++) if(mag[i]>0) vals.push(mag[i]);
+  vals.sort((a,b)=>a-b);
+  const t=vals[Math.floor(vals.length*0.85)]||30;
+  const bin=new Uint8Array(w*h);
+  for(let i=0;i<w*h;i++) bin[i]=mag[i]>=t?255:0;
+
+  const dil=dilate(bin,w,h,1);
+  const boundary=[];
+  for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){
+    if(dil[y*w+x]) boundary.push({x,y});
+  }
+  if(boundary.length<50) return null;
+
+  const hull=convexHull(boundary);
+  if(hull.length<4) return null;
+  const per=hullPerim(hull);
+
+  for(let ep=0.015;ep<=0.12;ep+=0.005){
+    const ap=approxPoly(hull,ep*per);
+    if(ap.length===4){
+      const ord=orderCorners(ap);
+      if(isGoodQuad(ord,w,h)) return ord;
+    }
+  }
+  return null;
+}
+
+// ── Main detection: try brightness first, then edges ──
 function detectCorners(img){
-  const MAX=600,sc=Math.min(1,MAX/Math.max(img.width,img.height));
+  const MAX=500,sc=Math.min(1,MAX/Math.max(img.width,img.height));
   const w=Math.round(img.width*sc),h=Math.round(img.height*sc);
   const tc=document.createElement('canvas');tc.width=w;tc.height=h;
   tc.getContext('2d').drawImage(img,0,0,w,h);
   const id=tc.getContext('2d').getImageData(0,0,w,h);
-  const gray=toGray(id),bl=gBlur(gray,w,h),edg=sobel(bl,w,h),bin=thresh(edg,w,h,.15),dil=dilate(bin,w,h,2);
-  const contours=findContours(dil,w,h);if(!contours.length)return null;
-  contours.sort((a,b)=>b.length-a.length);
-  for(const c of contours.slice(0,10)){
-    const hull=convexHull(c);if(hull.length<4)continue;
-    const per=hullPerim(hull);
-    for(let ep=.02;ep<=.1;ep+=.01){
-      const ap=approxPoly(hull,ep*per);
-      if(ap.length===4){const ord=orderCorners(ap);if(isGoodQuad(ord,w,h))return ord.map(p=>({x:p.x/sc,y:p.y/sc}))}
-    }
-  }
+  const gray=toGray(id);
+
+  // Try brightness-based detection first (best for paper on desk)
+  let result=detectByBrightness(gray,w,h);
+  if(result) return result.map(p=>({x:p.x/sc,y:p.y/sc}));
+
+  // Fallback: edge-based detection
+  result=detectByEdges(gray,w,h);
+  if(result) return result.map(p=>({x:p.x/sc,y:p.y/sc}));
+
   return null;
 }
 
