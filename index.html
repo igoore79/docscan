@@ -172,7 +172,7 @@ button{font-family:var(--font);cursor:pointer;border:none;outline:none;-webkit-a
   <button class="btn-ghost" id="btn-upload" disabled onclick="pickFile()">Upload Image</button>
   <input type="file" id="file-input" accept="image/*" class="hide">
   <button class="refresh-btn hide" id="update-btn" onclick="location.reload()" title="Update available">↻ Update available</button>
-  <div class="w-version" id="version-label">v1.05</div>
+  <div class="w-version" id="version-label">v1.06</div>
 </div>
 
 <div id="screen-camera">
@@ -669,23 +669,24 @@ function enhanceDocument(dataURL){
           let normGray=new cv.Mat();
           normF.convertTo(normGray,cv.CV_8U,230);
 
-          // ── Step 4: Contrast curve — preserve text, whiten paper ──
+          // ── Step 4: Contrast curve — CamScanner-style: bold text, clean white ──
           let lut=new cv.Mat(1,256,cv.CV_8U);
           let lutData=lut.data;
           for(let i=0;i<256;i++){
             let n=i/255;
-            // Paper (very bright) → white; Text → darker; mid-tones preserved
-            if(n>0.85){
-              n=1.0; // only very bright paper → pure white
-            } else if(n>0.65){
-              // Light gray zone (form borders, light text) — gentle lift
-              n=0.55+((n-0.65)/(0.85-0.65))*0.45;
-            } else if(n<0.35){
-              // Dark text — make it darker/bolder
-              n=Math.pow(n/0.35,1.5)*0.2;
+            if(n>0.82){
+              n=1.0; // bright paper → pure white
+            } else if(n>0.62){
+              // Light elements (form borders, dropdown arrows) — lift toward white but keep visible
+              let t=(n-0.62)/(0.82-0.62); // 0→1 in this zone
+              n=0.72+t*0.28; // output 0.72→1.0
+            } else if(n<0.30){
+              // Dark text — push to near-black for bold look
+              n=Math.pow(n/0.30,1.3)*0.12; // output 0→0.12 (very dark)
             } else {
-              // Mid-tones (gray text, labels) — preserve but enhance
-              n=0.2+((n-0.35)/(0.65-0.35))*0.35;
+              // Mid-tones (gray labels, thin lines) — darken to make more readable
+              let t=(n-0.30)/(0.62-0.30); // 0→1 in this zone
+              n=0.12+t*0.60; // output 0.12→0.72
             }
             lutData[i]=Math.max(0,Math.min(255,Math.round(n*255)));
           }
@@ -694,15 +695,15 @@ function enhanceDocument(dataURL){
 
           // ── Step 5: Sharpening via unsharp mask ──
           let blurred=new cv.Mat();
-          cv.GaussianBlur(contrasted,blurred,new cv.Size(0,0),1.2);
+          cv.GaussianBlur(contrasted,blurred,new cv.Size(0,0),1.0);
           let sharpened=new cv.Mat();
-          cv.addWeighted(contrasted,1.5,blurred,-0.5,0,sharpened);
+          cv.addWeighted(contrasted,1.4,blurred,-0.4,0,sharpened);
 
-          // ── Step 6: Final cleanup — gentle clamp ──
+          // ── Step 6: Final cleanup ──
           let finalData=sharpened.data;
           for(let i=0;i<finalData.length;i++){
-            if(finalData[i]>245) finalData[i]=255;
-            if(finalData[i]<15) finalData[i]=0;
+            if(finalData[i]>240) finalData[i]=255;
+            if(finalData[i]<12) finalData[i]=0;
           }
 
           // ── Step 7: Convert back to RGBA for output ──
@@ -744,13 +745,13 @@ function enhanceDocument(dataURL){
         let n=(gray[i]-p2)/range;
         n=Math.max(0,Math.min(1,n));
         // S-curve — match OpenCV path
-        if(n>0.85) n=1.0;
-        else if(n>0.65) n=0.55+((n-0.65)/0.2)*0.45;
-        else if(n<0.35) n=Math.pow(n/0.35,1.5)*0.2;
-        else n=0.2+((n-0.35)/0.3)*0.35;
+        if(n>0.82) n=1.0;
+        else if(n>0.62){let t=(n-0.62)/0.2;n=0.72+t*0.28;}
+        else if(n<0.30) n=Math.pow(n/0.30,1.3)*0.12;
+        else{let t=(n-0.30)/0.32;n=0.12+t*0.60;}
         let v=Math.round(n*255);
-        if(v>245) v=255;
-        if(v<15) v=0;
+        if(v>240) v=255;
+        if(v<12) v=0;
         const j=i*4;
         d[j]=d[j+1]=d[j+2]=v;
       }
@@ -879,7 +880,7 @@ function goHome(){resultDataURL='';showScreen('screen-welcome')}
 window.addEventListener('resize',()=>{if(document.getElementById('screen-crop').style.display==='flex')requestAnimationFrame(()=>initCropCanvas())});
 
 // ── VERSION CHECK ──
-const APP_VERSION='1.05';
+const APP_VERSION='1.06';
 
 async function checkForUpdate(){
   try{
