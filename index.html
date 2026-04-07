@@ -263,16 +263,49 @@ function sobel(g,w,h){
   return {mag,mx,my};
 }
 
-// Adaptive threshold: bright pixels = paper candidate
-function brightMask(gray,w,h){
-  // Compute mean brightness
-  let sum=0; for(let i=0;i<w*h;i++) sum+=gray[i];
-  const mean=sum/(w*h);
-  // Threshold slightly below mean to catch paper (paper is usually brighter than background)
-  const t=Math.max(mean*0.85, 100);
+// Paper mask: uses BOTH brightness AND low saturation
+// Paper is bright + achromatic (low saturation). Desk wood is bright but saturated (warm tones).
+function paperMask(imgData){
+  const d=imgData.data, w=imgData.width, h=imgData.height;
   const mask=new Uint8Array(w*h);
-  for(let i=0;i<w*h;i++) mask[i]=gray[i]>t?255:0;
-  return mask;
+
+  // First pass: compute brightness stats to set adaptive threshold
+  let bSum=0;
+  const brArr=new Float32Array(w*h);
+  for(let i=0;i<w*h;i++){
+    const j=i*4;
+    const r=d[j],g=d[j+1],b=d[j+2];
+    const br=0.299*r+0.587*g+0.114*b;
+    brArr[i]=br; bSum+=br;
+  }
+  const bMean=bSum/(w*h);
+
+  // Sort brightness to find top percentile
+  const sorted=[...brArr].sort((a,b)=>a-b);
+  const p75=sorted[Math.floor(sorted.length*0.75)];
+  const p95=sorted[Math.floor(sorted.length*0.95)];
+
+  // Paper threshold: must be in the brighter portion of the image
+  const brightThresh=Math.max(p75, bMean*1.05, 120);
+
+  // Second pass: classify pixels
+  for(let i=0;i<w*h;i++){
+    const j=i*4;
+    const r=d[j],g=d[j+1],b=d[j+2];
+    const br=brArr[i];
+
+    // Saturation: how "colorful" is this pixel?
+    const maxC=Math.max(r,g,b), minC=Math.min(r,g,b);
+    const sat=maxC>0?(maxC-minC)/maxC:0;
+
+    // Paper = bright AND low saturation (white/light gray)
+    // sat < 0.25 filters out wooden desk, colored objects
+    // Also allow very bright pixels even with slightly higher sat (glare/highlights on paper)
+    if(br>=brightThresh && (sat<0.25 || br>p95)){
+      mask[i]=255;
+    }
+  }
+  return {mask, w, h};
 }
 
 // Morphological operations
@@ -381,19 +414,18 @@ function hullPerim(p){
   let s=0;for(let i=0;i<p.length;i++){const j=(i+1)%p.length;s+=Math.hypot(p[j].x-p[i].x,p[j].y-p[i].y)}return s;
 }
 
-// ── Method 1: Brightness-based paper detection ──
-function detectByBrightness(gray,w,h){
-  const bright=brightMask(gray,w,h);
+// ── Method 1: Paper detection (brightness + low saturation) ──
+function detectByBrightness(imgData,w,h){
+  const {mask}=paperMask(imgData);
   // Clean up noise: open then close
-  let cleaned=morphOpen(bright,w,h,3);
+  let cleaned=morphOpen(mask,w,h,3);
   cleaned=morphClose(cleaned,w,h,5);
 
-  // Find the largest connected bright region
+  // Find the largest connected paper region
   const vis=new Uint8Array(w*h);
   let bestPts=null, bestSize=0;
   for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){
     if(!cleaned[y*w+x]||vis[y*w+x]) continue;
-    // BFS flood fill
     const region=[];const q=[[x,y]];vis[y*w+x]=1;
     while(q.length>0&&region.length<100000){
       const[cx,cy]=q.shift();region.push({x:cx,y:cy});
@@ -409,7 +441,6 @@ function detectByBrightness(gray,w,h){
 
   if(!bestPts||bestPts.length<100) return null;
 
-  // Build mask of just the largest region, get its boundary
   const regionMask=new Uint8Array(w*h);
   for(const p of bestPts) regionMask[p.y*w+p.x]=255;
   const boundary=traceBoundary(regionMask,w,h);
@@ -419,7 +450,6 @@ function detectByBrightness(gray,w,h){
   if(hull.length<4) return null;
   const per=hullPerim(hull);
 
-  // Try to approximate to 4-sided polygon
   for(let ep=0.015;ep<=0.12;ep+=0.005){
     const ap=approxPoly(hull,ep*per);
     if(ap.length===4){
@@ -463,7 +493,7 @@ function detectByEdges(gray,w,h){
   return null;
 }
 
-// ── Main detection: try brightness first, then edges ──
+// ── Main detection: try paper detection first, then edges ──
 function detectCorners(img){
   const MAX=500,sc=Math.min(1,MAX/Math.max(img.width,img.height));
   const w=Math.round(img.width*sc),h=Math.round(img.height*sc);
@@ -472,8 +502,8 @@ function detectCorners(img){
   const id=tc.getContext('2d').getImageData(0,0,w,h);
   const gray=toGray(id);
 
-  // Try brightness-based detection first (best for paper on desk)
-  let result=detectByBrightness(gray,w,h);
+  // Try color-aware paper detection first (best for paper on desk/table)
+  let result=detectByBrightness(id,w,h);
   if(result) return result.map(p=>({x:p.x/sc,y:p.y/sc}));
 
   // Fallback: edge-based detection
