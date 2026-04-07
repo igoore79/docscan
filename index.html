@@ -318,10 +318,14 @@ function loadImageForCrop(du){
     const det=detectCorners(cropImg);
     if(det){corners=det;autoDetected=true}
     else{const m=.1;corners=[{x:cropImg.width*m,y:cropImg.height*m},{x:cropImg.width*(1-m),y:cropImg.height*m},{x:cropImg.width*(1-m),y:cropImg.height*(1-m)},{x:cropImg.width*m,y:cropImg.height*(1-m)}];autoDetected=false}
-    hideSpinner();initCropCanvas();showScreen('screen-crop');
-    const hint=document.getElementById('crop-hint');
-    if(autoDetected){hint.textContent='✓ Document detected — adjust if needed';hint.classList.add('auto')}
-    else{hint.textContent='Drag corners to fit your document';hint.classList.remove('auto')}
+    hideSpinner();showScreen('screen-crop');
+    // Wait for layout to compute before measuring canvas wrapper
+    requestAnimationFrame(()=>{requestAnimationFrame(()=>{
+      initCropCanvas();
+      const hint=document.getElementById('crop-hint');
+      if(autoDetected){hint.textContent='✓ Document detected — adjust if needed';hint.classList.add('auto')}
+      else{hint.textContent='Drag corners to fit your document';hint.classList.remove('auto')}
+    })});
   };cropImg.src=du;
 }
 function initCropCanvas(){
@@ -421,9 +425,9 @@ async function shareResult(){
 }
 function dl(du,fn){const a=document.createElement('a');a.href=du;a.download=fn;document.body.appendChild(a);a.click();document.body.removeChild(a)}
 function ts(){const d=new Date();return d.getFullYear()+''+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0')+'_'+String(d.getHours()).padStart(2,'0')+String(d.getMinutes()).padStart(2,'0')}
-function backFromResult(){showScreen('screen-crop')}
+function backFromResult(){showScreen('screen-crop');requestAnimationFrame(()=>requestAnimationFrame(()=>initCropCanvas()))}
 function goHome(){resultDataURL='';showScreen('screen-welcome')}
-window.addEventListener('resize',()=>{if(document.getElementById('screen-crop').style.display==='flex')initCropCanvas()});
+window.addEventListener('resize',()=>{if(document.getElementById('screen-crop').style.display==='flex')requestAnimationFrame(()=>initCropCanvas())});
 </script>
 </body>
 </html>
