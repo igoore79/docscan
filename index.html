@@ -120,10 +120,10 @@ button{font-family:var(--font);cursor:pointer;border:none;outline:none;-webkit-a
   background:repeating-conic-gradient(var(--s1) 0% 25%,var(--bg) 0% 50%) 0 0/20px 20px;
 }
 #result-img{max-width:100%;max-height:100%;border-radius:var(--r);box-shadow:0 8px 40px rgba(0,0,0,.5)}
-.res-actions{padding:20px;padding-bottom:36px;display:flex;gap:10px;background:var(--s1);border-top:1px solid var(--s2);flex-shrink:0}
+.res-actions{padding:20px;padding-bottom:36px;display:flex;flex-wrap:wrap;gap:10px;background:var(--s1);border-top:1px solid var(--s2);flex-shrink:0}
 .res-btn{
-  flex:1;padding:14px;border-radius:var(--r);font-size:14px;font-weight:600;
-  display:flex;align-items:center;justify-content:center;gap:8px;transition:all .15s;
+  flex:1 1 calc(50% - 5px);min-width:0;padding:12px 8px;border-radius:var(--r);font-size:13px;font-weight:600;
+  display:flex;align-items:center;justify-content:center;gap:6px;transition:all .15s;
 }
 .res-btn:active{transform:scale(.96)}
 .res-btn.jpeg{background:var(--s2);color:var(--text);border:1px solid var(--s3)}
@@ -187,7 +187,8 @@ button{font-family:var(--font);cursor:pointer;border:none;outline:none;-webkit-a
   <div class="res-actions">
     <button class="res-btn jpeg" onclick="saveJPEG()"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>JPEG</button>
     <button class="res-btn pdf" onclick="savePDF()"><svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>PDF</button>
-    <button class="res-btn share" onclick="shareResult()"><svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>Share</button>
+    <button class="res-btn share" onclick="shareJPEG()"><svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>Share IMG</button>
+    <button class="res-btn share" onclick="sharePDF()"><svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>Share PDF</button>
   </div>
   <button class="res-new" onclick="goHome()">Scan another document</button>
 </div>
@@ -438,13 +439,20 @@ function detectWithOpenCVAdaptive(imgElement,scale,w,h){
 
 // ── Geometry helpers ──
 function orderCorners(pts){
-  let cx=0,cy=0;pts.forEach(p=>{cx+=p.x;cy+=p.y});cx/=4;cy/=4;
-  const angled=pts.map(p=>({...p,ang:Math.atan2(p.y-cy,p.x-cx)}));
-  angled.sort((a,b)=>a.ang-b.ang);
-  let minSum=Infinity,minIdx=0;
-  angled.forEach((p,i)=>{const s=p.x+p.y;if(s<minSum){minSum=s;minIdx=i}});
-  const rot=[...angled.slice(minIdx),...angled.slice(0,minIdx)];
-  return[rot[0],rot[3],rot[2],rot[1]]; // TL TR BR BL
+  // Classic reliable method:
+  // TL = smallest (x+y), BR = largest (x+y)
+  // TR = smallest (y-x), BL = largest (y-x)
+  const sorted=[...pts];
+  let tl=sorted[0],tr=sorted[0],br=sorted[0],bl=sorted[0];
+  let minSum=Infinity,maxSum=-Infinity,minDiff=Infinity,maxDiff=-Infinity;
+  for(const p of sorted){
+    const s=p.x+p.y, d=p.y-p.x;
+    if(s<minSum){minSum=s;tl=p}
+    if(s>maxSum){maxSum=s;br=p}
+    if(d<minDiff){minDiff=d;tr=p}
+    if(d>maxDiff){maxDiff=d;bl=p}
+  }
+  return[tl,tr,br,bl];
 }
 function quadArea(p){let a=0;for(let i=0;i<4;i++){const j=(i+1)%4;a+=p[i].x*p[j].y-p[j].x*p[i].y}return Math.abs(a)/2}
 function angBtw(a,b,c){
@@ -580,6 +588,25 @@ function inv3(m){const[a,b,c,d,e,f,g,h,i]=m,det=a*(e*i-f*h)-b*(d*i-f*g)+c*(d*h-e
 // ── EXPORT ──
 function saveJPEG(){dl(resultDataURL,'DocScan_'+ts()+'.jpg');toast('JPEG saved')}
 function savePDF(){
+  const blob=buildPdfBlob();
+  const url=URL.createObjectURL(blob),a=document.createElement('a');
+  a.href=url;a.download='DocScan_'+ts()+'.pdf';document.body.appendChild(a);a.click();document.body.removeChild(a);
+  URL.revokeObjectURL(url);toast('PDF saved');
+}
+async function shareJPEG(){
+  if(!navigator.share){toast('Share not supported — saving instead');saveJPEG();return}
+  try{const blob=await(await fetch(resultDataURL)).blob();const file=new File([blob],'DocScan_'+ts()+'.jpg',{type:'image/jpeg'});
+    await navigator.share({files:[file],title:'Scanned Document'})}catch(e){if(e.name!=='AbortError')toast('Share failed')}
+}
+async function sharePDF(){
+  if(!navigator.share){toast('Share not supported — saving instead');savePDF();return}
+  try{
+    const blob=buildPdfBlob();
+    const file=new File([blob],'DocScan_'+ts()+'.pdf',{type:'application/pdf'});
+    await navigator.share({files:[file],title:'Scanned Document'});
+  }catch(e){if(e.name!=='AbortError')toast('Share failed')}
+}
+function buildPdfBlob(){
   const img=document.getElementById('result-img'),c=document.createElement('canvas');c.width=img.naturalWidth;c.height=img.naturalHeight;c.getContext('2d').drawImage(img,0,0);
   const jdu=c.toDataURL('image/jpeg',.92),jb64=jdu.split(',')[1],jb=atob(jb64),jl=jb.length;
   const pw=595.28,ph=841.89,ia=c.width/c.height,pa=pw/ph;let iw,ih;
@@ -598,13 +625,7 @@ function savePDF(){
   xr+=`trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xo}\n%%EOF`;const xrb=enc.encode(xr);
   const tot=pb.length+jl+pa2.length+xrb.length,arr=new Uint8Array(tot);arr.set(pb,0);
   for(let i=0;i<jl;i++)arr[pb.length+i]=jb.charCodeAt(i);arr.set(pa2,pb.length+jl);arr.set(xrb,pb.length+jl+pa2.length);
-  const blob=new Blob([arr],{type:'application/pdf'}),url=URL.createObjectURL(blob),a=document.createElement('a');
-  a.href=url;a.download='DocScan_'+ts()+'.pdf';document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);toast('PDF saved');
-}
-async function shareResult(){
-  if(!navigator.share){toast('Share not supported — saving instead');saveJPEG();return}
-  try{const blob=await(await fetch(resultDataURL)).blob();const file=new File([blob],'DocScan_'+ts()+'.jpg',{type:'image/jpeg'});
-    await navigator.share({files:[file],title:'Scanned Document'})}catch(e){if(e.name!=='AbortError')toast('Share cancelled')}
+  return new Blob([arr],{type:'application/pdf'});
 }
 function dl(du,fn){const a=document.createElement('a');a.href=du;a.download=fn;document.body.appendChild(a);a.click();document.body.removeChild(a)}
 function ts(){const d=new Date();return d.getFullYear()+''+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0')+'_'+String(d.getHours()).padStart(2,'0')+String(d.getMinutes()).padStart(2,'0')}
