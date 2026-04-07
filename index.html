@@ -172,7 +172,7 @@ button{font-family:var(--font);cursor:pointer;border:none;outline:none;-webkit-a
   <button class="btn-ghost" id="btn-upload" disabled onclick="pickFile()">Upload Image</button>
   <input type="file" id="file-input" accept="image/*" class="hide">
   <button class="refresh-btn hide" id="update-btn" onclick="location.reload()" title="Update available">↻ Update available</button>
-  <div class="w-version" id="version-label">v1.06</div>
+  <div class="w-version" id="version-label">v1.07</div>
 </div>
 
 <div id="screen-camera">
@@ -284,7 +284,7 @@ function toggleFlash(){
 function capture(){
   const v=document.getElementById('video'),c=document.getElementById('snap-canvas');
   c.width=v.videoWidth;c.height=v.videoHeight;c.getContext('2d').drawImage(v,0,0);
-  stopStream();loadImageForCrop(c.toDataURL('image/jpeg',0.95));
+  stopStream();loadImageForCrop(c.toDataURL('image/jpeg',0.97));
 }
 function pickFile(){document.getElementById('file-input').click()}
 document.getElementById('file-input').addEventListener('change',e=>{
@@ -574,7 +574,7 @@ async function doTransform(){
 
       const outC=document.createElement('canvas');outC.width=W;outC.height=H;
       cv.imshow(outC,dst);
-      rawResultDataURL=outC.toDataURL('image/jpeg',.92);
+      rawResultDataURL=outC.toDataURL('image/jpeg',.97);
 
       src.delete();dst.delete();M.delete();srcPts.delete();dstPts.delete();
 
@@ -610,7 +610,7 @@ async function doTransformManual(){
       d[di]=s[i00]*w00+s[i10]*w10+s[i01]*w01+s[i11]*w11;d[di+1]=s[i00+1]*w00+s[i10+1]*w10+s[i01+1]*w01+s[i11+1]*w11;
       d[di+2]=s[i00+2]*w00+s[i10+2]*w10+s[i01+2]*w01+s[i11+2]*w11;d[di+3]=255}}
   dctx.putImageData(dd,0,0);
-  rawResultDataURL=dc.toDataURL('image/jpeg',.92);
+  rawResultDataURL=dc.toDataURL('image/jpeg',.97);
   resultDataURL=await enhanceDocument(rawResultDataURL);
   document.getElementById('result-img').src=resultDataURL;
   currentFilter='enhanced';
@@ -669,24 +669,24 @@ function enhanceDocument(dataURL){
           let normGray=new cv.Mat();
           normF.convertTo(normGray,cv.CV_8U,230);
 
-          // ── Step 4: Contrast curve — CamScanner-style: bold text, clean white ──
+          // ── Step 4: Contrast curve — bold dark text, clean white paper ──
           let lut=new cv.Mat(1,256,cv.CV_8U);
           let lutData=lut.data;
           for(let i=0;i<256;i++){
             let n=i/255;
-            if(n>0.82){
-              n=1.0; // bright paper → pure white
-            } else if(n>0.62){
-              // Light elements (form borders, dropdown arrows) — lift toward white but keep visible
-              let t=(n-0.62)/(0.82-0.62); // 0→1 in this zone
-              n=0.72+t*0.28; // output 0.72→1.0
-            } else if(n<0.30){
-              // Dark text — push to near-black for bold look
-              n=Math.pow(n/0.30,1.3)*0.12; // output 0→0.12 (very dark)
+            if(n>0.80){
+              n=1.0; // paper → pure white
+            } else if(n>0.58){
+              // Light elements (form borders, dropdowns) — visible but lifted
+              let t=(n-0.58)/(0.80-0.58);
+              n=0.65+t*0.35; // output 0.65→1.0
+            } else if(n<0.28){
+              // Dark text — push hard to black
+              n=Math.pow(n/0.28,1.5)*0.06; // output 0→0.06 (nearly black)
             } else {
-              // Mid-tones (gray labels, thin lines) — darken to make more readable
-              let t=(n-0.30)/(0.62-0.30); // 0→1 in this zone
-              n=0.12+t*0.60; // output 0.12→0.72
+              // Mid-tones (gray labels, form text) — keep darker for readability
+              let t=(n-0.28)/(0.58-0.28);
+              n=0.06+t*0.59; // output 0.06→0.65
             }
             lutData[i]=Math.max(0,Math.min(255,Math.round(n*255)));
           }
@@ -715,7 +715,7 @@ function enhanceDocument(dataURL){
           [src,gray,bgGray,grayF,bgF,normF,epsilon,normGray,lut,contrasted,
            blurred,sharpened,outRgba].forEach(m=>m.delete());
 
-          resolve(c.toDataURL('image/jpeg',.92));
+          resolve(c.toDataURL('image/jpeg',.97));
           return;
         }catch(e){
           console.error('Enhancement error:',e);
@@ -745,10 +745,10 @@ function enhanceDocument(dataURL){
         let n=(gray[i]-p2)/range;
         n=Math.max(0,Math.min(1,n));
         // S-curve — match OpenCV path
-        if(n>0.82) n=1.0;
-        else if(n>0.62){let t=(n-0.62)/0.2;n=0.72+t*0.28;}
-        else if(n<0.30) n=Math.pow(n/0.30,1.3)*0.12;
-        else{let t=(n-0.30)/0.32;n=0.12+t*0.60;}
+        if(n>0.80) n=1.0;
+        else if(n>0.58){let t=(n-0.58)/0.22;n=0.65+t*0.35;}
+        else if(n<0.28) n=Math.pow(n/0.28,1.5)*0.06;
+        else{let t=(n-0.28)/0.30;n=0.06+t*0.59;}
         let v=Math.round(n*255);
         if(v>240) v=255;
         if(v<12) v=0;
@@ -756,7 +756,7 @@ function enhanceDocument(dataURL){
         d[j]=d[j+1]=d[j+2]=v;
       }
       ctx.putImageData(imgData,0,0);
-      resolve(c.toDataURL('image/jpeg',.92));
+      resolve(c.toDataURL('image/jpeg',.97));
     };
     img.src=dataURL;
   });
@@ -783,7 +783,7 @@ function makeBW(dataURL){
           cv.cvtColor(bw,outRgba,cv.COLOR_GRAY2RGBA);
           cv.imshow(c,outRgba);
           src.delete();gray.delete();bw.delete();outRgba.delete();
-          resolve(c.toDataURL('image/jpeg',.92));
+          resolve(c.toDataURL('image/jpeg',.97));
           return;
         }catch(e){console.error('BW error:',e)}
       }
@@ -798,7 +798,7 @@ function makeBW(dataURL){
         d[i]=d[i+1]=d[i+2]=v;
       }
       ctx.putImageData(imgData,0,0);
-      resolve(c.toDataURL('image/jpeg',.92));
+      resolve(c.toDataURL('image/jpeg',.97));
     };
     img.src=dataURL;
   });
@@ -847,7 +847,7 @@ async function sharePDF(){
 }
 function buildPdfBlob(){
   const img=document.getElementById('result-img'),c=document.createElement('canvas');c.width=img.naturalWidth;c.height=img.naturalHeight;c.getContext('2d').drawImage(img,0,0);
-  const jdu=c.toDataURL('image/jpeg',.92),jb64=jdu.split(',')[1],jb=atob(jb64),jl=jb.length;
+  const jdu=c.toDataURL('image/jpeg',.97),jb64=jdu.split(',')[1],jb=atob(jb64),jl=jb.length;
 
   // Page size: fit image to A4 width (595.28pt) preserving aspect ratio
   // This way the image is never distorted — page height adapts to content
@@ -880,7 +880,7 @@ function goHome(){resultDataURL='';showScreen('screen-welcome')}
 window.addEventListener('resize',()=>{if(document.getElementById('screen-crop').style.display==='flex')requestAnimationFrame(()=>initCropCanvas())});
 
 // ── VERSION CHECK ──
-const APP_VERSION='1.06';
+const APP_VERSION='1.07';
 
 async function checkForUpdate(){
   try{
